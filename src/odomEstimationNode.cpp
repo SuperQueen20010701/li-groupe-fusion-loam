@@ -26,7 +26,7 @@
 #include "lidar.h"
 #include "odomEstimationClass.h"
 
-// 储存变换到当前点云的位姿变换
+
 OdomEstimationClass odomEstimation;
 std::mutex mutex_lock;
 std::queue<sensor_msgs::PointCloud2ConstPtr> pointCloudEdgeBuf;
@@ -34,8 +34,8 @@ std::queue<sensor_msgs::PointCloud2ConstPtr> pointCloudSurfBuf;
 lidar::Lidar lidar_param;
 
 ros::Publisher pubLaserOdometry;
-
-// dt文件
+ros::Publisher pubLocalMap;
+// save the odometry data 
 // std::ofstream dt_file_kitti;
 FILE *dt_file_kitti;
 FILE *dt_file_tum;
@@ -150,6 +150,12 @@ void odom_estimation(){
             laserOdometry.pose.pose.position.z = t_current.z();
             pubLaserOdometry.publish(laserOdometry);
 
+            sensor_msgs::PointCloud2 localMapMsg;
+            pcl::toROSMsg(*odomEstimation.local_map, localMapMsg);
+            localMapMsg.header.frame_id = "map";
+            localMapMsg.header.stamp = pointcloud_time;
+            pubLocalMap.publish(localMapMsg);
+
             Eigen::Isometry3d T = odomEstimation.odom;
             fprintf(dt_file_kitti, "%f %f %f %f %f %f %f %f %f %f %f %f\n", 
                 T(0,0), T(0,1), T(0,2), T(0,3),
@@ -178,7 +184,9 @@ int main(int argc, char **argv)
     double min_dis = 2.0;
     double map_resolution = 0.4;
     std::string dt_file_loc;
+    int icp_method;
     double _k, _king, _theta;
+    bool use_icp = true;
     nh.getParam("/scan_period", scan_period); 
     nh.getParam("/vertical_angle", vertical_angle); 
     nh.getParam("/max_dis", max_dis);
@@ -189,6 +197,8 @@ int main(int argc, char **argv)
     nh.getParam("/k", _k);
     nh.getParam("/king", _king);
     nh.getParam("/theta", _theta);
+    nh.getParam("/icp_method", icp_method); /// 1:general icp 2:multi scale icp
+    nh.getParam("/use_icp", use_icp);
 
     lidar_param.setScanPeriod(scan_period);
     lidar_param.setVerticalAngle(vertical_angle);
@@ -196,11 +206,12 @@ int main(int argc, char **argv)
     lidar_param.setMaxDistance(max_dis);
     lidar_param.setMinDistance(min_dis);
 
-    odomEstimation.init(lidar_param, map_resolution, _k, _king, _theta);
+    odomEstimation.init(lidar_param, map_resolution, _k, _king, _theta, icp_method,use_icp);
     ros::Subscriber subEdgeLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_edge", 100, velodyneEdgeHandler);
     ros::Subscriber subSurfLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_surf", 100, velodyneSurfHandler);
 
     pubLaserOdometry = nh.advertise<nav_msgs::Odometry>("/odom", 100);
+    pubLocalMap = nh.advertise<sensor_msgs::PointCloud2>("/local_map", 100);
     std::thread odom_estimation_process{odom_estimation};
 
     ROS_INFO("\033[1;32m---->\033[0m Odometey Started.");
@@ -216,11 +227,6 @@ int main(int argc, char **argv)
     // dt_file_kitti.close();
     fclose(dt_file_kitti);
     fclose(dt_file_tum);
-        
-    FILE * time_file = fopen((dt_file_loc+"time_odom.txt").c_str(), "w");
-    fprintf(time_file, "%f\n", total_time/total_frame);
-    fclose(time_file);
-
 
     return 0;
 }

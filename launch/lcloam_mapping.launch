@@ -24,8 +24,16 @@
     <param name="map_resolution" type="double" value="0.2" />
     <param name="max_dis" type="double" value="90.0" />
     <param name="min_dis" type="double" value="0.5" />
-    <param name="dt_folder" type="string" value="$(find lcloam)/test/dt/" />
+    <param name="dt_folder" type="string" value="$(env HOME)/KITTI_Result/evo/" />
     <param name="save_directory" type="string" value="$(find lcloam)/test/backend/" />
+    <param name="icp_method" type="int" value="2" />
+    <param name="use_icp" type="bool" value="true" />
+ 
+    <param name="k_" type="double" value="20" />
+    <param name="theta" type="double" value="0.8" />
+    <param name="king" type="double" value="20" />
+
+
 
     <!--- -->
     <node pkg="lcloam" type="lcloam_odom_estimation_node" name="lcloam_odom_estimation_node" output="screen"/>

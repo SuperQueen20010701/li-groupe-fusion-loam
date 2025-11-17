@@ -9,7 +9,6 @@ void LaserProcessingClass::init(lidar::Lidar lidar_param_in){
 
 }
 
-// Lego Loam的近似实现
 void LaserProcessingClass::featureExtraction(const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_ground, const pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_not_ground, pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_out_edge, pcl::PointCloud<pcl::PointXYZI>::Ptr& pc_out_surf){
     pcl::PointCloud<pcl::PointXYZI>::Ptr pc_temp;          
     pc_temp = pc_not_ground;
@@ -22,10 +21,9 @@ void LaserProcessingClass::featureExtraction(const pcl::PointCloud<pcl::PointXYZ
     std::vector<int> indices;
     pcl::removeNaNFromPointCloud(*pc_temp, indices);
     int N_SCANS = lidar_param.num_lines;
-    // 储存每个SCAN的点云 index 0是第0条SCAN的点云
+
     std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> laserCloudScans;
     for(int i=0;i<N_SCANS;i++){
-        // 为每圈SCAN分配空间
         laserCloudScans.push_back(pcl::PointCloud<pcl::PointXYZI>::Ptr(new pcl::PointCloud<pcl::PointXYZI>()));
     }
 
@@ -79,12 +77,10 @@ void LaserProcessingClass::featureExtraction(const pcl::PointCloud<pcl::PointXYZ
 
     }
 
-    // 对不同SCAN的点云计算它们的曲率，原理和LOAM相同
     for(int i = 0; i < N_SCANS; i++){
         if(laserCloudScans[i]->points.size()<131){
             continue;
         }
-        // 一个SCAN里面所有点的曲率（除去了前后五个点的曲率）
         std::vector<Double2d> cloudCurvature; 
         int total_points = laserCloudScans[i]->points.size()-10;
         // 忽略前后五个点，对其它点计算曲率（因为前后五个点周围的点不够计算曲率）
@@ -101,7 +97,6 @@ void LaserProcessingClass::featureExtraction(const pcl::PointCloud<pcl::PointXYZ
             else{
                 Double2d distance(j,-1);
                 cloudCurvature.push_back(distance);
-                // assert(0);
             }
 
         }
@@ -135,9 +130,7 @@ void LaserProcessingClass::featureExtraction(const pcl::PointCloud<pcl::PointXYZ
         }
         pc_temp->push_back(point);
     }
-
-    // 将地面中的点全部作为平面点，同时加上非地面点中提取出的平面点
-    // *pc_out_surf += *pc_ground;
+    
     pc_out_surf = pc_temp;
 
 }
@@ -204,53 +197,6 @@ void LaserProcessingClass::featureExtractionFromSector(const pcl::PointCloud<pcl
         }
     }
 
-    //find flat points
-    // point_info_count =0;
-    // int smallestPickedNum = 0;
-    
-    // for (int i = 0; i <= (int)cloudCurvature.size()-1; i++)
-    // {
-    //     int ind = cloudCurvature[i].id; 
-
-    //     if( std::find(picked_points.begin(), picked_points.end(), ind)==picked_points.end()){
-    //         if(cloudCurvature[i].value > 0.1){
-    //             //ROS_WARN("extracted feature not qualified, please check lidar");
-    //             break;
-    //         }
-    //         smallestPickedNum++;
-    //         picked_points.push_back(ind);
-            
-    //         if(smallestPickedNum <= 4){
-    //             //find all points
-    //             pc_surf_flat->push_back(pc_in->points[ind]);
-    //             pc_surf_lessFlat->push_back(pc_in->points[ind]);
-    //             point_info_count++;
-    //         }
-    //         else{
-    //             break;
-    //         }
-
-    //         for(int k=1;k<=5;k++){
-    //             double diffX = pc_in->points[ind + k].x - pc_in->points[ind + k - 1].x;
-    //             double diffY = pc_in->points[ind + k].y - pc_in->points[ind + k - 1].y;
-    //             double diffZ = pc_in->points[ind + k].z - pc_in->points[ind + k - 1].z;
-    //             if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05){
-    //                 break;
-    //             }
-    //             picked_points.push_back(ind+k);
-    //         }
-    //         for(int k=-1;k>=-5;k--){
-    //             double diffX = pc_in->points[ind + k].x - pc_in->points[ind + k + 1].x;
-    //             double diffY = pc_in->points[ind + k].y - pc_in->points[ind + k + 1].y;
-    //             double diffZ = pc_in->points[ind + k].z - pc_in->points[ind + k + 1].z;
-    //             if (diffX * diffX + diffY * diffY + diffZ * diffZ > 0.05){
-    //                 break;
-    //             }
-    //             picked_points.push_back(ind+k);
-    //         }
-
-    //     }
-    // }
     
     // 从曲率最小的点开始
     for (int i = 0; i <= (int)cloudCurvature.size()-1; i++)
@@ -258,7 +204,8 @@ void LaserProcessingClass::featureExtractionFromSector(const pcl::PointCloud<pcl
         int ind = cloudCurvature[i].id; 
         // 如果该点没有被选中过并且该点不是无效点
         // TODO: 专门开个数组用来记录某个点是否被选中过
-        if( fabs(cloudCurvature[i].value + 1) < 1e-2 && std::find(picked_points.begin(), picked_points.end(), ind)==picked_points.end() )
+        if( fabs(cloudCurvature[i].value + 1) < 1e-2 && 
+        std::find(picked_points.begin(), picked_points.end(), ind)==picked_points.end() )
         {
             if(cloudCurvature[i].value > 0.1){
                 break;

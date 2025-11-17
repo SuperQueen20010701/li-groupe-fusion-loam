@@ -36,7 +36,7 @@ lidar::Lidar lidar_param;
 ros::Publisher pubEdgePoints;
 ros::Publisher pubSurfPoints;
 ros::Publisher pubLaserCloudFiltered;
-// ros::Publisher pubGroundPoints;
+ros::Publisher pubGroundPoints;
 // ros::Publisher pubNotGroundPoints;
 PatchWork<pcl::PointXYZI> PatchworkGroundSeg;
 
@@ -72,20 +72,13 @@ void laser_processing(){
             for(int i = 0; i < cloud_size; i++){
                 pointcloud_in->points[i].intensity = i;
             }
+
             pcl::PointCloud<pcl::PointXYZI>::Ptr pointcloud_ground(new pcl::PointCloud<pcl::PointXYZI>());          
             pcl::PointCloud<pcl::PointXYZI>::Ptr pointcloud_not_ground(new pcl::PointCloud<pcl::PointXYZI>());
             double time_taken;
             PatchworkGroundSeg.estimate_ground(*pointcloud_in, *pointcloud_ground, *pointcloud_not_ground, time_taken);
-            // std::sort(pointcloud_ground->points.begin(), pointcloud_ground->points.end(), [](const pcl::PointXYZI & a, const pcl::PointXYZI & b)
-            // { 
-            //     return a.intensity < b.intensity; 
-            // });
-            // 将被patchwork打乱之后的点云重新编号
-            // std::sort(pointcloud_not_ground->points.begin(), pointcloud_not_ground->points.end(), [](const pcl::PointXYZI & a, const pcl::PointXYZI & b)
-            // { 
-            //     return a.intensity < b.intensity; 
-            // });
-            // 标记ground点云
+
+            // 标记ground点云(小数)
             for(auto &point : pointcloud_ground->points){
                 point.intensity += 0.5;
             }
@@ -128,18 +121,12 @@ void laser_processing(){
             pubSurfPoints.publish(surfPointsMsg);
 
 
-            // sensor_msgs::PointCloud2 surfGroundMsg;
-            // pcl::toROSMsg(*pointcloud_ground, surfGroundMsg);
-            // surfGroundMsg.header.stamp = pointcloud_time;
-            // surfGroundMsg.header.frame_id = "base_link";
-            // pubGroundPoints.publish(surfGroundMsg);
+            sensor_msgs::PointCloud2 surfGroundMsg;
+            pcl::toROSMsg(*pointcloud_ground, surfGroundMsg);
+            surfGroundMsg.header.stamp = pointcloud_time;
+            surfGroundMsg.header.frame_id = "base_link";
+            pubGroundPoints.publish(surfGroundMsg);
 
-
-            // sensor_msgs::PointCloud2 surfNotGroundMsg;
-            // pcl::toROSMsg(*pointcloud_not_ground, surfNotGroundMsg);
-            // surfNotGroundMsg.header.stamp = pointcloud_time;
-            // surfNotGroundMsg.header.frame_id = "base_link";
-            // pubNotGroundPoints.publish(surfNotGroundMsg);
 
         }
         //sleep 2 ms every time
@@ -159,13 +146,11 @@ int main(int argc, char **argv)
     double max_dis = 60.0;
     double min_dis = 2.0;
 
-    string dt_file_loc;
     nh.getParam("/scan_period", scan_period); 
     nh.getParam("/vertical_angle", vertical_angle); 
     nh.getParam("/max_dis", max_dis);
     nh.getParam("/min_dis", min_dis);
     nh.getParam("/scan_line", scan_line);
-    nh.getParam("/dt_folder", dt_file_loc);
 
     lidar_param.setScanPeriod(scan_period);
     lidar_param.setVerticalAngle(vertical_angle);
@@ -184,7 +169,7 @@ int main(int argc, char **argv)
 
     pubSurfPoints = nh.advertise<sensor_msgs::PointCloud2>("/laser_cloud_surf", 100); 
 
-    // pubGroundPoints = nh.advertise<sensor_msgs::PointCloud2>("/laser_ground", 100); 
+    pubGroundPoints = nh.advertise<sensor_msgs::PointCloud2>("/laser_ground", 100); 
 
     // pubNotGroundPoints = nh.advertise<sensor_msgs::PointCloud2>("/laser_not_ground", 100); 
 
@@ -193,10 +178,6 @@ int main(int argc, char **argv)
     ROS_INFO("\033[1;32m---->\033[0m Laser Processing Started.");
 
     ros::spin();
-
-    FILE * time_file = fopen((dt_file_loc+"time_proc.txt").c_str(), "w");
-    fprintf(time_file, "%f\n", total_time/total_frame);
-    fclose(time_file);
 
     printf("\033[1;33maverage laser processing time %f ms\033[0m \n \n", total_time/total_frame);
 
