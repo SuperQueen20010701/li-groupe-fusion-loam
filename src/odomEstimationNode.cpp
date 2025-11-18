@@ -161,10 +161,12 @@ void odom_estimation(){
                 T(0,0), T(0,1), T(0,2), T(0,3),
                 T(1,0), T(1,1), T(1,2), T(1,3),
                 T(2,0), T(2,1), T(2,2), T(2,3));
+            fflush(dt_file_kitti); 
             fprintf(dt_file_tum, "%f %f %f %f %f %f %f %f\n", 
                 pointcloud_time.toSec(),
                 t_current.x(), t_current.y(), t_current.z(), 
                 q_current.x(), q_current.y(), q_current.z(), q_current.w());
+            fflush(dt_file_tum); 
         }
         //sleep 2 ms every time
         std::chrono::milliseconds dura(2);
@@ -187,6 +189,14 @@ int main(int argc, char **argv)
     int icp_method;
     double _k, _king, _theta;
     bool use_icp = true;
+
+    /// iterate icp phase
+    bool use_adaptive_icp = true;
+    double rot_std_thres = 0.3;
+    double trans_std_thres = 0.1;
+    int trust_max_iter_min = 5;
+    int trust_min_iter_max = 15;
+
     nh.getParam("/scan_period", scan_period); 
     nh.getParam("/vertical_angle", vertical_angle); 
     nh.getParam("/max_dis", max_dis);
@@ -200,13 +210,21 @@ int main(int argc, char **argv)
     nh.getParam("/icp_method", icp_method); /// 1:general icp 2:multi scale icp
     nh.getParam("/use_icp", use_icp);
 
+    /// get parameters for adaptive icp
+    nh.getParam("/use_adaptive_icp", use_adaptive_icp);
+    nh.getParam("/rot_std_thres", rot_std_thres);
+    nh.getParam("/trans_std_thres", trans_std_thres);
+    nh.getParam("/trust_max_iter_min", trust_max_iter_min);
+    nh.getParam("/trust_min_iter_max", trust_min_iter_max);
+
     lidar_param.setScanPeriod(scan_period);
     lidar_param.setVerticalAngle(vertical_angle);
     lidar_param.setLines(scan_line);
     lidar_param.setMaxDistance(max_dis);
     lidar_param.setMinDistance(min_dis);
 
-    odomEstimation.init(lidar_param, map_resolution, _k, _king, _theta, icp_method,use_icp);
+    odomEstimation.init(lidar_param, map_resolution, _k, _king, _theta, icp_method,use_icp,
+                    use_adaptive_icp,rot_std_thres,trans_std_thres,trust_max_iter_min,trust_min_iter_max);
     ros::Subscriber subEdgeLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_edge", 100, velodyneEdgeHandler);
     ros::Subscriber subSurfLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>("/laser_cloud_surf", 100, velodyneSurfHandler);
 

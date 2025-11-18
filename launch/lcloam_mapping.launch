@@ -26,12 +26,20 @@
     <param name="min_dis" type="double" value="0.5" />
     <param name="dt_folder" type="string" value="$(env HOME)/KITTI_Result/evo/" />
     <param name="save_directory" type="string" value="$(find lcloam)/test/backend/" />
-    <param name="icp_method" type="int" value="2" />
-    <param name="use_icp" type="bool" value="true" />
+    <param name="icp_method" type="int" value="1" />
+    <param name="use_icp" type="bool" value="false" />
  
     <param name="k_" type="double" value="20" />
     <param name="theta" type="double" value="0.8" />
     <param name="king" type="double" value="20" />
+
+    <!-- using the adaptive icp strategy -->
+    <param name="use_adaptive_icp" type="bool" value="true" />
+    <param name="rot_std_thres" type="double" value="0.3" />
+    <param name="trans_std_thres" type="double" value="0.1" />
+    <!-- 根据optimization 优化出的pose 的uncertainty 最终给出一个icp的iteration number -->
+    <param name="trust_max_iter_min" type="int" value="0" /> 
+    <param name="trust_min_iter_max" type="int" value="10" />
 
 
 
@@ -43,5 +51,19 @@
     <node pkg="tf" type="static_transform_publisher" name="word2map_tf"  args="0 0 0 0 0 0 /world /map 10" />
 
     <rosparam command="load" file="$(find lcloam)/config/params.yaml" />
+
+
+    <!-- <node pkg="hector_trajectory_server" type="hector_trajectory_server" name="trajectory_server_loam" ns="gt" >
+        <param name="/target_frame_name" value="world" />
+        <param name="/source_frame_name" value="velodyne" />
+        <param name="/trajectory_update_rate" value="10.0" />
+        <param name="/trajectory_publish_rate" value="10.0" />
+    </node> -->
+    <node pkg="hector_trajectory_server" type="hector_trajectory_server" name="trajectory_server_loam" ns="base_link" >
+        <param name="/target_frame_name" value="world" />
+        <param name="/source_frame_name" value="base_link" />
+        <param name="/trajectory_update_rate" value="10.0" />
+        <param name="/trajectory_publish_rate" value="10.0" />
+    </node>
 
 </launch>

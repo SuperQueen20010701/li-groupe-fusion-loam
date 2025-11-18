@@ -6,7 +6,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 # set(CMAKE_CXX_FLAGS_RELEASE "-DNANOFLANN")
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE "Release")
+set(CMAKE_BUILD_TYPE "Debug")
 
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
@@ -20,6 +20,8 @@ find_package(catkin REQUIRED COMPONENTS
   eigen_conversions
 )
 
+set(Open3D_DIR "/usr/local/lib/cmake/Open3D")
+find_package(Open3D REQUIRED)
 find_package(Eigen3)
 if(NOT EIGEN3_FOUND)
   # Fallback to cmake_modules
@@ -42,14 +44,15 @@ include_directories(
   ${PCL_INCLUDE_DIRS}
   ${CERES_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+  ${Open3D_INCLUDE_DIRS}
 )
 
 link_directories(
   include
   ${PCL_LIBRARY_DIRS}
   ${CERES_LIBRARY_DIRS}
+  ${Open3D_LIBRARY_DIRS}
 )
-
 
 catkin_package(
   CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs
@@ -62,7 +65,8 @@ add_executable(lcloam_laser_processing_node src/laserProcessingNode.cpp src/lase
 target_link_libraries(lcloam_laser_processing_node ${EIGEN3_LIBRARIES} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES})
 
 add_executable(lcloam_odom_estimation_node src/odomEstimationNode.cpp src/lidarOptimization.cpp src/lidar.cpp src/odomEstimationClass.cpp)
-target_link_libraries(lcloam_odom_estimation_node ${EIGEN3_LIBRARIES} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES})
+target_link_libraries(lcloam_odom_estimation_node ${EIGEN3_LIBRARIES} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES} ${Open3D_LIBRARIES} OpenMP::OpenMP_CXX)
+
 
 add_executable(lcloam_laser_mapping_node src/laserMappingNode.cpp src/laserMappingClass.cpp src/lidar.cpp)
 target_link_libraries(lcloam_laser_mapping_node ${EIGEN3_LIBRARIES} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${CERES_LIBRARIES})

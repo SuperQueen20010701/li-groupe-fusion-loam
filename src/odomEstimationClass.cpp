@@ -125,7 +125,9 @@ pcl::PointCloud<pcl::PointXYZRGB>::Ptr rgbds (pcl::PointCloud<pcl::PointXYZRGB>:
 	return output;
 }
 
-void OdomEstimationClass::init(lidar::Lidar lidar_param, double map_resolution, double _k, double _theta, double _king, int icp_method_in, bool use_icp_in){
+void OdomEstimationClass::init(lidar::Lidar lidar_param, double map_resolution, double _k, double _theta, double _king, int icp_method_in, bool use_icp_in,
+    bool use_adaptive_icp_in, double rot_std_thres_in,double trans_std_thres_in,
+    int trust_max_iter_min_in, int trust_min_iter_max_in){
 
     k_ = _k;
     theta = _theta;
@@ -155,6 +157,12 @@ void OdomEstimationClass::init(lidar::Lidar lidar_param, double map_resolution, 
     icp_method_ = icp_method_in;
     use_icp_ = use_icp_in;
 
+    use_adaptive_icp_ = use_adaptive_icp_in;
+    rot_std_thres_ = rot_std_thres_in;
+    trans_std_thres_ = trans_std_thres_in;
+    trust_max_iter_min_ = trust_max_iter_min_in;
+    trust_min_iter_max_ = trust_min_iter_max_in;
+
     icp_result_surf_ = {.T_ = Eigen::Matrix4d::Identity(),
         .icp_rmse_ = 0.0,
         .fitness_ = 0.0,
@@ -166,6 +174,8 @@ void OdomEstimationClass::init(lidar::Lidar lidar_param, double map_resolution, 
         .fitness_ = 0.0,
         .inlier_p_cnt_ = 0,
         .valid_ = true};
+
+    local_map = pcl::PointCloud<pcl::PointXYZI>::Ptr(new pcl::PointCloud<pcl::PointXYZI>());
 
 }
 
@@ -205,7 +215,13 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
     }
 
 #pragma region using the icp method as the initial pose guess
-    if(use_icp_){
+    TicToc tic_icp ;
+    /// using the pos trusty to decide the icp process 
+    int icp_iter_num = 5;
+    bool uncertain_level = false;
+    uncertain_level = confidence_estimation(icp_iter_num);
+    if(use_icp_ && uncertain_level){
+        ROS_INFO("INFO !! using icp method to get the initial pose guess");
         init_trans_pose_.topLeftCorner<3,3>() = q_w_curr.toRotationMatrix();
         init_trans_pose_.topRightCorner<3,1>() = t_w_curr;
 
@@ -214,26 +230,26 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
 
         getLocalMap(surf_local_map, corner_local_map, init_trans_pose_, 80.0);
 
-        if(!surf_local_map.size() >100 && !corner_local_map.size() >100){
+        if(surf_local_map->size() >50 && corner_local_map->size()> 50){
             
             ///get the local map 
-            std::shared_ptr<open3d::geometry::PointCloud> pc_edge_map_out(new open3d::geometry::PointCloud);
-            std::shared_ptr<open3d::geometry::PointCloud> pc_surf_map_out(new open3d::geometry::PointCloud);
-            Pcl2GeomtryPoint(surf_local_map, corner_local_map, pc_edge_map_out, pc_surf_map_out);
+            ROS_INFO("INFO !! START icp matching  !! map size : %d , %d", corner_local_map->size(), surf_local_map->size());
+            std::pair<std::shared_ptr<open3d::geometry::PointCloud> ,std::shared_ptr<open3d::geometry::PointCloud>>  pc_map_out = Pcl2GeomtryPoint(surf_local_map, corner_local_map);
             /// get curr geometry point cloud
-            std::shared_ptr<open3d::geometry::PointCloud> pc_edge_scan_out(new open3d::geometry::PointCloud);
-            std::shared_ptr<open3d::geometry::PointCloud> pc_surf_scan_out(new open3d::geometry::PointCloud);
-            Pcl2GeomtryPoint(edge_in, surf_in, pc_edge_scan_out, pc_surf_scan_out);
+
+            std::pair<std::shared_ptr<open3d::geometry::PointCloud> ,std::shared_ptr<open3d::geometry::PointCloud>>  pc_scan_out =
+            Pcl2GeomtryPoint(edge_in, surf_in);
             /// 利用open3d icp进行匹配
             pipelines::registration::RegistrationResult icp_result_edge ;
             pipelines::registration::RegistrationResult icp_result_surf;
 
-            auto criteria = pipelines::registration::ICPConvergenceCriteria(10);
+            auto criteria = pipelines::registration::ICPConvergenceCriteria(icp_iter_num);
             
-            icp_result_edge = ScanToLocalMapIcp(pc_edge_scan_out, pc_edge_map_out, init_trans_pose_, criteria, "corner_icp");
-            icp_result_surf = ScanToLocalMapIcp(pc_surf_scan_out, pc_surf_map_out, init_trans_pose_, criteria, "surf_icp");
+            icp_result_edge = ScanToLocalMapIcp(pc_scan_out.first, pc_map_out.first, init_trans_pose_, criteria, "corner_icp");
+            icp_result_surf = ScanToLocalMapIcp(pc_scan_out.second, pc_map_out.second, init_trans_pose_, criteria, "surf_icp");
 
             /// 检查icp的结果
+            
             if(checkICPResult(icp_result_edge, icp_result_surf))
             {
                 if(evaluate_metric_icp.T_final != Eigen::Matrix4d::Identity() &&
@@ -254,6 +270,8 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
             ROS_WARN("WARN !! not enough points in  map to associate");
         }
     }
+    double t_icp = tic_icp.toc();
+    ROS_INFO("icp matching time %f ms", t_icp);
 #pragma endregion
 
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr downsampledEdgeCloud(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -273,60 +291,40 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
         #endif
 
         // 优化optimization_count轮（每次会对parameter在前一次基础上进行优化）
+        TicToc tic_optimization ;
+        ceres::Solver::Options options;
+        ceres::Problem::Options problem_options;
+        ceres::Problem problem(problem_options);
+        ceres::Solver::Summary summary;
         for (int iterCount = 0; iterCount < optimization_count; iterCount++){
+            ceres::LossFunction *loss_function = new ceres::HuberLoss(0.1);
+            compute_covariance_count++;
+            problem.AddParameterBlock(paramEuler, 6);
+            addEdgeCostFactor(downsampledEdgeCloud,laserCloudCornerMap,problem,loss_function);         
+            addSurfCostFactor(downsampledSurfCloud,laserCloudSurfMap,problem,loss_function);
+            
+            options.linear_solver_type = ceres::DENSE_QR;
+            options.max_num_iterations = 4;
+            options.minimizer_progress_to_stdout = false;
+            options.check_gradients = false;
+            options.gradient_check_relative_precision = 1e-4;
+            
+            // solve 会修改paramEuler
+            ceres::Solve(options, &problem, &summary);
+            updatePose();
+        }
+        double optimize_time = tic_optimization.toc();
+        ROS_INFO("optimization time %f ms", optimize_time);
+        if((use_covariance == false ) && 
+        ((compute_covariance_count % std::max(compute_covariance_stride,1) )==0)){
+            compute_covariance_count =0;
+            if(downsampledEdgeCloud->points.size() < 10 || downsampledSurfCloud->points.size() < 50)
             {
-                ceres::LossFunction *loss_function = new ceres::HuberLoss(0.1);
-                ceres::Problem::Options problem_options;
-                // 优化问题
-                ceres::Problem problem(problem_options);
-
-                // 设置需要优化的参数
-                problem.AddParameterBlock(paramEuler, 6);
-                
-                // 添加面特征项
-                addSurfCostFactor(downsampledSurfCloud,laserCloudSurfMap,problem,loss_function);
-
-                // 优化参数设置
-                ceres::Solver::Options options;
-                options.linear_solver_type = ceres::DENSE_QR;
-                options.max_num_iterations = 4;
-                options.minimizer_progress_to_stdout = false;
-                options.check_gradients = false;
-                options.gradient_check_relative_precision = 1e-4;
-                ceres::Solver::Summary summary;
-
-                // solve 会修改paramEuler
-                ceres::Solve(options, &problem, &summary);
-                updatePose();
+                ROS_WARN("not enough points to compute the covariance !!");
+                has_last_pos_cov = false;
+            }else{
+                has_last_pos_cov = ComputePoseConfidence(problem); 
             }
-        // }
-        // for (int iterCount = 0; iterCount < optimization_count; iterCount++){
-            {
-                ceres::LossFunction *loss_function = new ceres::HuberLoss(0.1);
-                ceres::Problem::Options problem_options;
-                // 优化问题
-                ceres::Problem problem(problem_options);
-
-                // 设置需要优化的参数
-                problem.AddParameterBlock(paramEuler, 6);
-                
-                // 添加线特征项
-                addEdgeCostFactor(downsampledEdgeCloud,laserCloudCornerMap,problem,loss_function);
-
-                // 优化参数设置
-                ceres::Solver::Options options;
-                options.linear_solver_type = ceres::DENSE_QR;
-                options.max_num_iterations = 4;
-                options.minimizer_progress_to_stdout = false;
-                options.check_gradients = false;
-                options.gradient_check_relative_precision = 1e-4;
-                ceres::Solver::Summary summary;
-
-                // solve 会修改paramEuler
-                ceres::Solve(options, &problem, &summary);
-                updatePose();
-            }
-
         }
     }else{
         printf("not enough points in map to associate, map error");
@@ -335,14 +333,13 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
     odom = Eigen::Isometry3d::Identity();
     odom.linear() = q_w_curr.toRotationMatrix();
     odom.translation() = t_w_curr;
+    
     // 添加特征点到map中
-
     if(keyframe_satisfy)/// 存放关键帧
     {
         addPointsToMap(downsampledEdgeCloud,downsampledSurfCloud);
         ROS_INFO("更新局部地图");
     }
-   
 }
 
 // 根据当前欧拉角的参数更新旋转四元数和平移矩阵
@@ -477,7 +474,6 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
     if(corner_num<20){
         printf("not enough correct points");
     }
-
 }
 
 void OdomEstimationClass::addSurfCostFactor(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& map_in, ceres::Problem& problem, ceres::LossFunction *loss_function){
@@ -671,8 +667,8 @@ void OdomEstimationClass::getLocalMap(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& su
     Eigen::Vector3f curr_trans = initial_pose_matrix.block<3, 1>(0, 3).cast<float>();
 
     Eigen::Affine3f curr_pos;
-    curr_pos.linear() = rotation;
-    curr_pos.translation() = translation;
+    curr_pos.linear() = curr_rot;
+    curr_pos.translation() = curr_trans;
 
     Eigen::Vector4f min_pt(-radius, -radius, -std::numeric_limits<float>::infinity(), 1.0);
     Eigen::Vector4f max_pt(radius, radius, std::numeric_limits<float>::infinity(), 1.0);
@@ -682,45 +678,46 @@ void OdomEstimationClass::getLocalMap(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& su
     box_filter.setInputCloud(laserCloudCornerMap);
     box_filter.setMin(min_pt);
     box_filter.setMax(max_pt);
-    box_filter.setTranslation(pose_trans.translation());
-    box_filter.setRotation(pose_trans.rotation().eulerAngles(0, 1, 2));
+    box_filter.setTranslation(curr_pos.translation());
+    box_filter.setRotation(curr_pos.rotation().eulerAngles(0, 1, 2));
     box_filter.filter(*corner_local_map);
 
     /// for the local map of the local surf map ;
     box_filter.setInputCloud(laserCloudSurfMap);
     box_filter.setMin(min_pt);
     box_filter.setMax(max_pt);
-    box_filter.setTranslation(pose_trans.translation());
-    box_filter.setRotation(pose_trans.rotation().eulerAngles(0, 1, 2));
+    box_filter.setTranslation(curr_pos.translation());
+    box_filter.setRotation(curr_pos.rotation().eulerAngles(0, 1, 2));
     box_filter.filter(*surf_local_map);
 }
 
-void OdomEstimationClass::Pcl2GeomtryPoint( const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_edge_in, 
-                                            const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_surf_in,
-                                            std::shared_ptr<open3d::geometry::PointCloud> &pc_edge_out,
-                                            std::shared_ptr<open3d::geometry::PointCloud> &pc_surf_out)
+std::pair<std::shared_ptr<open3d::geometry::PointCloud> ,std::shared_ptr<open3d::geometry::PointCloud>>  
+OdomEstimationClass::Pcl2GeomtryPoint( const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_edge_in, 
+                                            const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_surf_in)
 {
-
-    pc_edge_out->points_.resize(pc_in_edge->size());
-    pc_surf_out->points_.resize(pc_in_surf->size());
+    std::shared_ptr<open3d::geometry::PointCloud> pc_edge_out(new open3d::geometry::PointCloud());
+    std::shared_ptr<open3d::geometry::PointCloud> pc_surf_out(new open3d::geometry::PointCloud());
+    pc_edge_out->points_.resize(pc_edge_in->size());
+    pc_surf_out->points_.resize(pc_surf_in->size());
     /// for edge
-    for(int i = 0 ; i < pc_in_edge->size() ; ++ i)
+    for(int i = 0 ; i < pc_edge_in->size() ; ++ i)
     {
-        pc_edge_out->points_[i][0] = pc_in_edge->points.at(i).x;
-        pc_edge_out->points_[i][1] = pc_in_edge->points.at(i).y;
-        pc_edge_out->points_[i][2] = pc_in_edge->points.at(i).z;
+        pc_edge_out->points_[i][0] = pc_edge_in->points.at(i).x;
+        pc_edge_out->points_[i][1] = pc_edge_in->points.at(i).y;
+        pc_edge_out->points_[i][2] = pc_edge_in->points.at(i).z;
     }
     /// for surf
-    for(int i = 0 ; i < pc_in_surf->size() ; ++ i)
+    for(int i = 0 ; i < pc_surf_in->size() ; ++ i)
     {
-        pc_surf_out->points_[i][0] = pc_in_surf->points.at(i).x;
-        pc_surf_out->points_[i][1] = pc_in_surf->points.at(i).y;
-        pc_surf_out->points_[i][2] = pc_in_surf->points.at(i).z;
+        pc_surf_out->points_[i][0] = pc_surf_in->points.at(i).x;
+        pc_surf_out->points_[i][1] = pc_surf_in->points.at(i).y;
+        pc_surf_out->points_[i][2] = pc_surf_in->points.at(i).z;
     }
-
+    return std::make_pair(pc_edge_out,pc_surf_out);
 }
 
-open3d::pipelines::registration::RegistrationResult OdomEstimationClass::ScanToLocalMapIcp(std::shared_ptr<open3d::geometry::PointCloud> &source,
+open3d::pipelines::registration::RegistrationResult OdomEstimationClass::ScanToLocalMapIcp(
+    std::shared_ptr<open3d::geometry::PointCloud> &source,
     std::shared_ptr<open3d::geometry::PointCloud> &target,
     const Eigen::Matrix4d &init_pose,
     const open3d::pipelines::registration::ICPConvergenceCriteria &criteria,
@@ -730,7 +727,7 @@ open3d::pipelines::registration::RegistrationResult OdomEstimationClass::ScanToL
 
     pipelines::registration::RegistrationResult icp_result;
 
-    double max_correspondence_distance = 2.0;
+    double max_correspondence_distance = icp_curr_corr_dist_;
 
     switch(icp_method_){
         case 1:
@@ -783,11 +780,11 @@ open3d::pipelines::registration::RegistrationResult OdomEstimationClass::ScanToL
             ///计算icp内点
             if(regis_type == "corner_icp")
             {
-                icp_corner.inlier_p_cnt_ = getInlinerIcpPointCount(*source,*target,icp.transformation_,1.0);
+                icp_result_corner_.inlier_p_cnt_ = getInlinerIcpPointCount(*source,*target,icp_result.transformation_,1.0);
                 ROS_INFO("%s:matched point size is: %d \n","icp_corner",icp_result_corner_.inlier_p_cnt_);
             } else if (regis_type == "surf_icp")
             {
-                icp_surf.inlier_p_cnt_ = getInlinerIcpPointCount(*source,*target,icp.transformation_,1.0);
+                icp_result_surf_.inlier_p_cnt_ = getInlinerIcpPointCount(*source,*target,icp_result.transformation_,1.0);
                 ROS_INFO("%s:matched point size is: %d \n","icp_surf",icp_result_surf_.inlier_p_cnt_);
             }
             break;
@@ -833,12 +830,14 @@ bool OdomEstimationClass::checkICPResult(const pipelines::registration::Registra
     icp_result_surf_.T_ = icp_result_surf.transformation_;
     icp_result_surf_.icp_rmse_ = icp_result_surf.inlier_rmse_;
     icp_result_surf_.fitness_ = icp_result_surf.fitness_;
-    icp_result_surf_ = calculateIcpQuality(icp_result_surf_);
+    ROS_INFO("surf icp rmse: %f , fitness: %f , valid: %d", icp_result_surf_.icp_rmse_, icp_result_surf_.fitness_, icp_result_surf_.valid_);
+    calculateIcpQuality(icp_result_surf_);
 
     icp_result_corner_.T_ = icp_result_corner.transformation_;
     icp_result_corner_.icp_rmse_ = icp_result_corner.inlier_rmse_;
     icp_result_corner_.fitness_ = icp_result_corner.fitness_;
-    icp_result_corner_ = calculateIcpQuality(icp_result_corner_);
+    ROS_INFO("corner icp rmse: %f , fitness: %f , valid: %d", icp_result_corner_.icp_rmse_, icp_result_corner_.fitness_, icp_result_corner_.valid_);
+    calculateIcpQuality(icp_result_corner_);
 
     if (!icp_result_surf_.valid_ && ! icp_result_corner_.valid_)
     {
@@ -864,26 +863,28 @@ bool OdomEstimationClass::checkICPResult(const pipelines::registration::Registra
         ROS_INFO("use the surf registration translation for initial guess");
         return true;
     }
-
+    const double eps = 1e-9;
     /// both surf icp and corner icp valid
-    Eigen::Matrix4d dT = icp_corner.T_.inverse() * icp_surf.T_; /// transformation matrix difference
+    Eigen::Matrix4d dT = icp_result_corner_.T_.inverse() * icp_result_surf_.T_; /// transformation matrix difference
     Eigen::AngleAxisd aa(Eigen::Matrix3d(dT.block<3,3>(0,0)));
     double dtheta = std::abs(aa.angle()); // rad
     double dt = (dT.block<3,1>(0,3)).norm();  /// translation difference
 
     //// 计算权重
-    double wei_surf = (icp_surf.inlier_p_cnt_ *icp_surf.fitness_)/(0.3 * 0.3 + eps);  // surf weight
-    double wei_corner = (icp_corner.inlier_p_cnt_ *icp_corner.fitness_)/(0.3 * 0.3 + eps); // corner weight 
+    double wei_surf = (icp_result_surf_.inlier_p_cnt_ *icp_result_surf_.fitness_)/(0.3 * 0.3 + eps);  // surf weight
+    double wei_corner = (icp_result_corner_.inlier_p_cnt_ *icp_result_corner_.fitness_)/(0.3 * 0.3 + eps); // corner weight 
     /// 用于计算组合的误差
     auto s_norm = std::sqrt(
-        (wei_surf * std::pow(icp_surf.icp_rmse_ / 0.3, 2) + wei_corner * std::pow(icp_corner.icp_rmse_ / 0.3, 2)) /(wei_surf + wei_corner + eps));
+        (wei_surf * std::pow(icp_result_surf_.icp_rmse_ / 0.3, 2) + wei_corner * std::pow(icp_result_corner_.icp_rmse_ / 0.3, 2))
+        /(wei_surf + wei_corner + eps));
 
     double q_res = 1.0 / (1.0 + s_norm);
-    double q_fit = (wei_surf * icp_surf.fitness_ + wei_corner * icp_corner.fitness_) / (wei_surf + wei_corner + eps); /// fitness weight
+    double q_fit = (wei_surf * icp_result_surf_.fitness_ + wei_corner * icp_result_corner_.fitness_)
+     / (wei_surf + wei_corner + eps); /// fitness weight
     double Q = std::pow(q_res, 1.0) * std::pow(q_fit, 1.0);
 
     const double thetamax = 5.0 * M_PI / 180.0, tmax = 0.50; ///euler angle and translation difference threshold
-
+    
     auto logmap = [&](const Eigen::Matrix4d& A) -> Eigen::Matrix<double,6,1> {
         /// 反对称矩阵
         auto skew = [](const Eigen::Vector3d& v) {
@@ -967,10 +968,10 @@ bool OdomEstimationClass::checkICPResult(const pipelines::registration::Registra
 
     if(dtheta > thetamax || dt > tmax)
     {
-        double spn = icp_surf.icp_rmse_ / 0.3;
-        double scn = icp_corner.icp_rmse_ / 0.3;
+        double spn = icp_result_surf_.icp_rmse_ / 0.3;
+        double scn = icp_result_corner_.icp_rmse_ / 0.3;
         bool pickSurf = (spn < scn) || (std::abs(spn - scn) < 0.05 && wei_surf >= wei_corner);
-        Eigen::Matrix4d T_best = pickSurf ? icp_surf.T_ : icp_corner.T_;
+        Eigen::Matrix4d T_best = pickSurf ? icp_result_surf_.T_ : icp_result_corner_.T_;
         const double low_thres_Q = 0.4, high_thres_Q = 0.8;
         auto clamp = [&](double Q)
         {
@@ -987,8 +988,8 @@ bool OdomEstimationClass::checkICPResult(const pipelines::registration::Registra
         return true;
     }
     ///将估计位姿与当前位姿进行融合
-    Eigen::Matrix<double,6,1> xi_p = logmap(init_trans_pose_.inverse() * icp_surf.T_);///对数映射
-    Eigen::Matrix<double,6,1> xi_c = logmap(init_trans_pose_.inverse() * icp_corner.T_);
+    Eigen::Matrix<double,6,1> xi_p = logmap(init_trans_pose_.inverse() * icp_result_surf_.T_);///对数映射
+    Eigen::Matrix<double,6,1> xi_c = logmap(init_trans_pose_.inverse() * icp_result_corner_.T_);
     Eigen::Matrix<double,6,1> xi = (wei_surf * xi_p + wei_corner * xi_c) / (wei_surf + wei_corner + eps);
     Eigen::Matrix4d T_final = init_trans_pose_ * expmap(xi); /// 指数映射
     evaluate_metric_icp.T_final = T_final;
@@ -1000,15 +1001,15 @@ bool OdomEstimationClass::checkICPResult(const pipelines::registration::Registra
 
 void OdomEstimationClass::calculateIcpQuality(IcpResult & icp_result_in)
 {
-    const double rmse_max = 0.2 ;
-    const double fit_min = 0.8 ;
+    const double rmse_max = 0.4 ;
+    const double fit_min = 0.55 ;
     auto metric_FixedQuality =[&](IcpResult & icp_result_in)
     {
         return (icp_result_in.fitness_ >= fit_min) &&
                 ((icp_result_in.icp_rmse_ > 0.0 ) && (icp_result_in.icp_rmse_ < rmse_max));
     };
     icp_result_in.valid_ = metric_FixedQuality(icp_result_in);
-
+    
 }
 
 bool OdomEstimationClass::SaveKeyframeRadius(Eigen::Isometry3d & curr_odom ,Eigen::Isometry3d & last_odom)
@@ -1019,16 +1020,16 @@ bool OdomEstimationClass::SaveKeyframeRadius(Eigen::Isometry3d & curr_odom ,Eige
     }
 
     Pose6D delta_pose = getTransformation(curr_odom, last_odom);
-    double delta_drz = delta_pose.drz;
-    if(delta_pose.drz > M_PI) delta_drz = delta_pose.drz - 2 * M_PI;
-    else if(delta_pose.drz < -M_PI) delta_drz = delta_pose.drz + 2 * M_PI;
+    double delta_drz = delta_pose.rz;
+    if(delta_drz> M_PI) delta_drz = delta_drz - 2 * M_PI;
+    else if(delta_drz < -M_PI) delta_drz = delta_drz + 2 * M_PI;
 
     bool reach_thres = false;
-    double delta_translation = sqrt(pow(delta_pose.dtx,2) + pow(delta_pose.dty,2) + pow(delta_pose.dtz,2));
+    double delta_translation = sqrt(pow(delta_pose.tx,2) + pow(delta_pose.ty,2) + pow(delta_pose.tz,2));
     keyframe_trans_accumulate += delta_translation;
-    if(abs(delta_tf.roll) > keyframe_rot_thres ||
-       abs(delta_tf.pitch) > keyframe_rot_thres ||
-       abs(delta_yaw) > keyframe_rot_thres ||
+    if(abs(delta_pose.rx) > keyframe_rot_thres ||
+       abs(delta_pose.ry) > keyframe_rot_thres ||
+       abs(delta_drz) > keyframe_rot_thres ||
        keyframe_trans_accumulate > keyframe_trans_thres)
     {
         reach_thres = true;
@@ -1051,11 +1052,11 @@ Pose6D OdomEstimationClass::getTransformation(Eigen::Isometry3d & curr_odom ,Eig
     Pose6D prev_odom_pose = {prev_translation[0],prev_translation[1],prev_translation[2],
                              prev_euler_zyx[2],prev_euler_zyx[1],prev_euler_zyx[0]};
 
-    Eigen::Affine3f  SE3_pose_prev = pcl::getTransformation(prev_odom_pose.x,prev_odom_pose.y,prev_odom_pose.z,
-                                                            prev_odom_pose.roll , prev_odom_pose.pitch,prev_odom_pose.yaw);
+    Eigen::Affine3f  SE3_pose_prev = pcl::getTransformation(prev_odom_pose.tx,prev_odom_pose.ty,prev_odom_pose.tz,
+                                                            prev_odom_pose.rx , prev_odom_pose.ry,prev_odom_pose.rz);
 
-    Eigen::Affine3f  SE3_pose_curr = pcl::getTransformation(curr_odom_pose.x,curr_odom_pose.y,curr_odom_pose.z,
-                                                            curr_odom_pose.roll , curr_odom_pose.pitch,curr_odom_pose.yaw);
+    Eigen::Affine3f  SE3_pose_curr = pcl::getTransformation(curr_odom_pose.tx,curr_odom_pose.ty,curr_odom_pose.tz,
+                                                            curr_odom_pose.rx , curr_odom_pose.ry,curr_odom_pose.rz);
 
     Eigen::Matrix4f  SE3_delta_1 = SE3_pose_prev.matrix().inverse() * SE3_pose_curr.matrix();
     Eigen::Affine3f SE3_delta_2;
@@ -1065,4 +1066,76 @@ Pose6D OdomEstimationClass::getTransformation(Eigen::Isometry3d & curr_odom ,Eig
 
     return Pose6D(double(abs(dtx)), double(abs(dty)), double(abs(dtz)),
                   double(abs(drx)), double(abs(dry)), double(abs(drz)));
+}
+
+bool OdomEstimationClass::ComputePoseConfidence(ceres::Problem & problem)
+{
+    bool set_consfident = false;
+
+    ceres::Covariance::Options cov_options;
+    ceres::Covariance covariance(cov_options);
+    std::vector<std::pair<const double*, const double*>> cov_blocks;
+    cov_blocks.emplace_back(paramEuler, paramEuler);
+
+    if (!covariance.Compute(cov_blocks, &problem)) {
+        ROS_WARN("Ceres covariance computation failed.");
+        return false;
+    }
+
+    double cov_6x6[36];
+    covariance.GetCovarianceBlock(paramEuler, paramEuler, cov_6x6);
+    Eigen::Map<Eigen::Matrix<double, 6, 6, Eigen::RowMajor>> cov_map(cov_6x6);
+    last_pose_covariance_ = cov_map;
+
+    /// calculate rot and trans std 
+    double rot_std = std::sqrt(std::max(0.0 , last_pose_covariance_(0,0)))
+                    + std::sqrt(std::max(0.0 ,last_pose_covariance_(1,1)))
+                    + std::sqrt(std::max(0.0 ,last_pose_covariance_(2,2)));
+
+    double trans_std = std::sqrt(std::max(0.0 , last_pose_covariance_(3,3))
+                    + std::sqrt(std::max(0.0 ,last_pose_covariance_(4,4)))
+                    + std::sqrt(std::max(0.0 ,last_pose_covariance_(5,5))));
+
+    last_pos_reliability = rot_std + trans_std;
+
+    ROS_INFO("INFO !! successfully compute the pose covariance , rot_std: %f , trans_std: %f , total std: %f", rot_std, trans_std, last_pos_reliability);
+    set_consfident = true;
+    return set_consfident;
+}
+
+
+bool OdomEstimationClass::confidence_estimation(int & icp_iter_num)
+{
+    if(!has_last_pos_cov)
+    {
+        ROS_WARN(" WARN !! no last pose covariance to estimate the confidence !!");
+        return true;
+    }
+
+    double rot_std = std::sqrt(std::max(0.0 , last_pose_covariance_(0,0))
+                    + std::max(0.0 ,last_pose_covariance_(1,1))
+                    + std::max(0.0 ,last_pose_covariance_(2,2)));
+
+    double trans_std = std::sqrt(std::max(0.0 , last_pose_covariance_(3,3))
+                    + std::max(0.0 ,last_pose_covariance_(4,4))
+                    + std::max(0.0 ,last_pose_covariance_(5,5)));
+
+    bool trust_pose = (rot_std < rot_std_thres_ , trans_std < trans_std_thres_);
+
+    if(trust_pose)
+    {
+        icp_iter_num = trust_max_iter_min_;
+        ROS_INFO(" INFO !! high confidence pose , no need to icp process");
+        return false;
+    }
+
+    bool uncertain_level = (rot_std > 2* rot_std_thres_) || (trans_std > 2 * trans_std_thres_);
+
+    icp_iter_num = uncertain_level ? trust_min_iter_max_ : std::max(trust_max_iter_min_,(trust_max_iter_min_ + trust_min_iter_max_)/2);
+
+    double weight = std::min(1.0, std::max(rot_std / (2* rot_std_thres_),trans_std / (2 * trans_std_thres_)));
+    icp_curr_corr_dist_ = icp_min_corr_dist_ + (icp_max_corr_dist_ - icp_min_corr_dist_) * weight;
+
+    ROS_INFO("INFO !! adaptive icp iteration num : %d", icp_iter_num);
+    return true;
 }

@@ -26,8 +26,9 @@
 //local lib
 #include "lidar.h"
 #include "laserProcessingClass.h"
+#include "tic_toc.h"
 
-
+using namespace tictoc;
 LaserProcessingClass laserProcessing;
 std::mutex mutex_lock;
 std::queue<sensor_msgs::PointCloud2ConstPtr> pointCloudBuf;
@@ -76,8 +77,10 @@ void laser_processing(){
             pcl::PointCloud<pcl::PointXYZI>::Ptr pointcloud_ground(new pcl::PointCloud<pcl::PointXYZI>());          
             pcl::PointCloud<pcl::PointXYZI>::Ptr pointcloud_not_ground(new pcl::PointCloud<pcl::PointXYZI>());
             double time_taken;
+            TicToc tic_grond_est ;
             PatchworkGroundSeg.estimate_ground(*pointcloud_in, *pointcloud_ground, *pointcloud_not_ground, time_taken);
-
+            double t_ground = tic_grond_est.toc();
+            ROS_INFO("ground segmentation time %f ms", t_ground);
             // 标记ground点云(小数)
             for(auto &point : pointcloud_ground->points){
                 point.intensity += 0.5;

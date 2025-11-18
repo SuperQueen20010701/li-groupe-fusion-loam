@@ -31,6 +31,7 @@
 #include "lidar.h"
 #include "lidarOptimization.h"
 #include <ros/ros.h>
+#include "tic_toc.h"
 
 #include <open3d/Open3D.h>
 
@@ -116,6 +117,11 @@ struct PointCloudAdaptor
 
 };  // end of PointCloudAdaptor
 
+using PC2KD = PointCloudAdaptor<pcl::PointCloud<pcl::PointXYZRGB>::Ptr>;
+using kd_treee_t = nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<float, PC2KD>, PC2KD, 3>;
+
+#endif
+
 struct KeyMeasurePose{
 	Eigen::Vector3d translation_;
 	Eigen::Quaterniond quaternion_;
@@ -134,7 +140,6 @@ struct IcpResult{
     double fitness_;
     size_t inlier_p_cnt_;
     bool valid_;
-
 };
 
 struct EvaluateMetric{
@@ -149,12 +154,12 @@ struct KeyframeMeasurement{
 	KeyMeasurePose keyframe_pose;
 
 	double time_keyframe;
-	Measurement():edge_in(new pcl::PointCloud<pcl::PointXYZRGB>()),
+	KeyframeMeasurement():edge_in(new pcl::PointCloud<pcl::PointXYZRGB>()),
 	surf_in(new pcl::PointCloud<pcl::PointXYZRGB>()),
-	odom_keyframe(Eigen::Isometry3d::Identity()),
-	time_keyframe(0.0){};
-
-}
+	keyframe_pose(KeyMeasurePose()),
+	time_keyframe(0.0){
+	};
+};
 
 struct Pose6D 
 {
@@ -162,12 +167,8 @@ struct Pose6D
 	Pose6D():tx(0.0), ty(0.0), tz(0.0), rx(0.0), ry(0.0), rz(0.0){};
 	Pose6D(double _tx, double _ty, double _tz, double _rx, double _ry, double _rz)
 	:tx(_tx), ty(_ty), tz(_tz), rx(_rx), ry(_ry), rz(_rz){};
-}
+};
 
-using PC2KD = PointCloudAdaptor<pcl::PointCloud<pcl::PointXYZRGB>::Ptr>;
-using kd_treee_t = nanoflann::KDTreeSingleIndexAdaptor<nanoflann::L2_Simple_Adaptor<float, PC2KD>, PC2KD, 3>;
-
-#endif
 
 class OdomEstimationClass 
 {
@@ -175,7 +176,9 @@ class OdomEstimationClass
     public:
     	OdomEstimationClass();
     	
-		void init(lidar::Lidar lidar_param, double map_resolution, double _k, double _theta, double _king, int icp_method_in, bool use_icp_in);	
+		void init(lidar::Lidar lidar_param, double map_resolution, double _k, double _theta, double _king, int icp_method_in,
+			 bool use_icp_in, bool use_adaptive_icp_in, double rot_std_thres_in,double trans_std_thres_in,
+			  int trust_max_iter_min_in, int trust_min_iter_max_in);	
 		void initMapWithPoints(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& edge_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& surf_in);
 		void updatePointsToMap(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& edge_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& surf_in);
 		void getMap(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& laserCloudMap);
@@ -195,9 +198,6 @@ class OdomEstimationClass
 		double king;
 		Eigen::Quaterniond q_w_curr;
 		Eigen::Vector3d t_w_curr;
-
-		Eigen
-
 		Eigen::Isometry3d last_odom;
 
 		//kd-tree
@@ -226,6 +226,19 @@ class OdomEstimationClass
 #pragma region using the icp method as the initial pose guess
 		bool use_icp_;
 		int icp_method_;	
+
+		/// for the acahive icp phrase
+
+		bool use_adaptive_icp_ = true;
+		double rot_std_thres_ = 0.3;
+		double trans_std_thres_ = 0.1;
+		int trust_max_iter_min_ = 5;
+		int trust_min_iter_max_ = 15;
+
+		double icp_min_corr_dist_ = 1.0;
+		double icp_max_corr_dist_ = 3.0;
+		double icp_curr_corr_dist_ = 2.0;
+
 		Matrix4d init_trans_pose_ = Eigen::Matrix4d::Identity();
 		IcpResult icp_result_surf_ , icp_result_corner_;
 		std::vector<KeyframeMeasurement> keyframe_measurements_store;
@@ -237,16 +250,23 @@ class OdomEstimationClass
 			.quality = 0.0, 
 			.accepted = false};
 
+		Eigen::Matrix<double , 6,6> last_pose_covariance_ = Eigen::Matrix<double,6,6>::Identity();
 
-
+		bool has_last_pos_cov = false;
+		double last_pos_reliability = 0.0;
+		int compute_covariance_stride = 20;
+		int compute_covariance_count = 0;
+		bool use_covariance = false ;
 		/// get local map based on init pose 
 		void getLocalMap(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& surf_local_map, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& corner_local_map,const Eigen::Matrix4d &initial_pose_matrix,
 			float radius = 50.0);
 
-		void Pcl2GeomtryPoint( const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_edge_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_surf_in,
-								pcl::PointCloud<open3d::geometry::PointXYZ>::Ptr &pc_edge_out,pcl::PointCloud<open3d::geometry::PointXYZ>::Ptr &pc_surf_out);
+		std::pair<std::shared_ptr<open3d::geometry::PointCloud> ,std::shared_ptr<open3d::geometry::PointCloud>> 
+		Pcl2GeomtryPoint(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_edge_in, 
+							const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &pc_surf_in);
 
-		open3d::pipelines::registration::RegistrationResult ScanToLocalMapIcp(std::shared_ptr<open3d::geometry::PointCloud> &source,
+		open3d::pipelines::registration::RegistrationResult ScanToLocalMapIcp(
+									std::shared_ptr<open3d::geometry::PointCloud> &source,
 									std::shared_ptr<open3d::geometry::PointCloud> &target,
 									const Eigen::Matrix4d &init_pose,
 									const open3d::pipelines::registration::ICPConvergenceCriteria &criteria,
@@ -264,6 +284,10 @@ class OdomEstimationClass
 		bool SaveKeyframeRadius(Eigen::Isometry3d & curr_odom ,Eigen::Isometry3d & last_odom);
 
 		Pose6D getTransformation(Eigen::Isometry3d & curr_odom ,Eigen::Isometry3d & last_odom);
+
+		bool confidence_estimation(int & icp_iter_num);
+
+		bool ComputePoseConfidence(ceres::Problem & problem);
 #pragma endregion
 
 		//function

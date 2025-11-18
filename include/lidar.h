@@ -31,9 +31,9 @@ class Lidar
         double vertical_angle_resolution;
         double vertical_angle;
 };
-
-
 }
+
+
 
 
 #endif // _LIDAR_H_
