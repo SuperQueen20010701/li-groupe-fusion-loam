@@ -202,14 +202,10 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
                     ceres::Problem surf_pbm(surf_opt);
                     surf_pbm.AddParameterBlock(paramEuler, 6);
                     
-                    // 添加面特征项
                     addSurfCostFactor(downsampledSurfCloud,laserCloudSurfMap);
 
-                    /// 筛选最优top K
-                    std::vector<size_t> surf_idx = selectTopNSurf(2000,surf_corrs_vec);
+                    std::vector<size_t> surf_idx = selectTopNSurf(max_select,surf_corrs_vec);
 
-
-                    /// top k 加入面特征residual 
                     for(size_t k_s = 0 ; k_s < surf_idx.size() ; k_s ++)
                     {
                         size_t i = surf_idx[k_s];
@@ -230,45 +226,44 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
                 }
                 // corner optimization 
                 {
+                    /// 线性求解器设置
+                    ceres::LossFunction *loss_function_corner = new ceres::HuberLoss(0.1);
+                    ceres::Problem::Options problem_options_corner;
+                    // 优化问题
+                    ceres::Problem pbm_corner(problem_options_corner);
+
+                    // 设置需要优化的参数
+                    pbm_corner.AddParameterBlock(paramEuler, 6);
+
                     addEdgeCostFactor(downsampledEdgeCloud,laserCloudCornerMap);
+
+                    std::vector<size_t> corner_idx = selectTopNCorner(max_select,cor_corrs_vec);
+
+                    /// 加入线特征残差
+                    for(size_t k_c = 0 ; k_c < corner_idx.size() ; k_c ++)
+                    {
+                        size_t i = corner_idx[k_c];
+                        const auto& cc = cor_corrs_vec[i];
+                        ceres::CostFunction *cost = new EdgeAnalyticCostFunction(cc.pc_, cc.pa_, cc.pb_);
+                        pbm_corner.AddResidualBlock(cost, loss_function_corner, paramEuler);
+                    }
+
+                    /// 角点特征优化求解
+                    ceres::Solver::Options options_corner;
+                    options_corner.linear_solver_type = ceres::DENSE_QR;
+                    options_corner.max_num_iterations = 4;
+                    options_corner.minimizer_progress_to_stdout = false;
+                    options_corner.check_gradients = false;
+                    options_corner.gradient_check_relative_precision = 1e-4;
+                    ceres::Solver::Summary summary;
+                    ceres::Solve(options_corner, &pbm_corner, &summary);
+                    
+                    updatePose();
                 }
-                
-                // 
-
-                // /// 筛选top k residual seed 
-               
-                // std::vector<size_t> corner_idx = selectTopNCorner(5000,cor_corrs_vec);
-
-                // /// add surf residual (weight)
-
-
-                // /// add corner residual (weight)
-                // for(size_t k_c = 0 ; k_c < corner_idx.size() ; k_c ++)
-                // {
-                //     size_t i = corner_idx[k_c];
-                //     const auto& cc = cor_corrs_vec[i];
-                //     ROS_INFO("直线的权重 : %f",cc.wei_c);
-                //     ceres::CostFunction *cost = new EdgeAnalyticCostFunction(cc.pc_, cc.pa_, cc.pb_);
-                //     problem_joint.AddResidualBlock(cost, loss_function, paramEuler);
-                // }
-                
-
-                // // 优化参数设置
-                // ceres::Solver::Options options;
-                // options.linear_solver_type = ceres::DENSE_QR;
-                // options.max_num_iterations = 4;
-                // options.minimizer_progress_to_stdout = false;
-                // options.check_gradients = false;
-                // options.gradient_check_relative_precision = 1e-4;
-                // ceres::Solver::Summary summary;
-                // ceres::Solve(options, &problem_joint, &summary);
-
-                // updatePose();
             }
         }
         double opt_duration = opt_time.toc();
         ROS_INFO("optimization time duration is %f ms", opt_duration);
-
     }else{
         printf("not enough points in map to associate, map error");
     }
@@ -332,24 +327,21 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
         pcl::PointXYZRGB point_temp;
         pointAssociateToMap(&(pc_in->points[i]), &point_temp);
 
-        // k临近查找到的点的index
         #ifdef NANOFLANN
         std::vector<size_t> pointSearchInd;
         #else
         std::vector<int> pointSearchInd;
         #endif
-        // k临近查找到的点的距离
         std::vector<float> pointSearchSqDis;
-        // 搜索point_temp周围的5个点
-        kdtreeEdgeMap->nearestKSearch(point_temp, 5, pointSearchInd, pointSearchSqDis); 
-        // 如果最远点距离也比较近
-        if (pointSearchSqDis[4] < 1.0)
+
+        //// 执行5倍最近邻搜索 构建edge residual factor 
+        bool use_multi_scale = true;
+        kdtreeEdgeMap->nearestKSearch(point_temp, 10, pointSearchInd, pointSearchSqDis); 
+           
+        if(pointSearchSqDis[4] < 1.0)
         {
-            // 依次储存5个最近点
             std::vector<Eigen::Vector3d> nearCorners;
-            // 储存5个点的重心坐标
             Eigen::Vector3d center(0, 0, 0);
-            // 取得5个点的重心
             for (int j = 0; j < 5; j++)
             {
                 Eigen::Vector3d tmp(map_in->points[pointSearchInd[j]].x,
@@ -358,10 +350,8 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
                 center = center + tmp;
                 nearCorners.push_back(tmp);
             }
-            center = center / 5.0;
 
-            // 5个点协方差矩阵
-            // https://njuferret.github.io/2019/07/28/2019-07-28_geometric-interpretation-covariance-matrix/
+            center = center / 5.0;
             Eigen::Matrix3d covMat = Eigen::Matrix3d::Zero();
             
             for (int j = 0; j < 5; j++)
@@ -371,13 +361,8 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
             }
 
             Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes(covMat);
-
-            // 5个点构成的线的方向
             Eigen::Vector3d unit_direction = saes.eigenvectors().col(2);
 
-            // 未经变换的当前点，和point_temp不同
-            Eigen::Vector3d curr_point(pc_in->points[i].x, pc_in->points[i].y, pc_in->points[i].z);
-            // 如果这5个点确实近似构成一条直线
             if (saes.eigenvalues()[2] > 3 * saes.eigenvalues()[1])
             { 
 
@@ -398,45 +383,47 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
                     assert(0);
                     continue;
                 }
+            }
+            
+            Eigen::Vector3d point_on_line = center;
+            Eigen::Vector3d point_a, point_b;
+            
+            point_a = 0.1 * unit_direction + point_on_line;
+            point_b = -0.1 * unit_direction + point_on_line;
+            Eigen::Vector3d curr_point(pc_in->points[i].x, pc_in->points[i].y, pc_in->points[i].z);
 
-                // 5个点的中心作为在直线上的点
-                Eigen::Vector3d point_on_line = center;
-                Eigen::Vector3d point_a, point_b;
-                // 在直线上找2个点
-                point_a = 0.1 * unit_direction + point_on_line;
-                point_b = -0.1 * unit_direction + point_on_line;
-                
-                // 添加一个边的误差项
-                // ceres::CostFunction *cost_function = new EdgeAnalyticCostFunction(curr_point, point_a, point_b);  
-                // problem.AddResidualBlock(cost_function, loss_function, paramEuler);
-                corner_num++;   
-                
-#pragma region 计算权重
-                ///计算邻域跨度
-                double maxp = -1e9, minp = 1e9;
-                for (int j = 0; j < 5; ++j){
-                    double proj = (nearCorners[j] - center).dot(unit_direction);
-                    if (proj > maxp) maxp = proj;
-                    if (proj < minp) minp = proj;
-                }
+            double r_seg = 0.0 ;
+            double maxp = -1e9, minp = 1e9;
+            for (int j = 0; j < 5; ++j){
+                double proj = (nearCorners[j] - center).dot(unit_direction);
+                if (proj > maxp) maxp = proj;
+                if (proj < minp) minp = proj;
+            }
 
-                Eigen::Vector3d endp_min = center + minp * unit_direction;
-                Eigen::Vector3d endp_max = center + maxp * unit_direction;
+            Eigen::Vector3d endp_min = center + minp * unit_direction;
+            Eigen::Vector3d endp_max = center + maxp * unit_direction;
 
-                /// 计算几何残差
-                Eigen::Matrix3d Rw = q_w_curr.toRotationMatrix();
-                Eigen::Vector3d tw = t_w_curr;
-                Eigen::Vector3d pw = Rw * curr_point + tw;
-                Eigen::Vector3d nu = (pw - point_a).cross(pw - point_b);
-                Eigen::Vector3d de = point_b - point_a;
-                double r_line = nu.norm() / std::max(1e-9, de.norm());
-                double scale = (pw - center).dot(unit_direction);
-                double r_seg = r_line;
-                if (scale < minp){
-                    r_seg = (pw - endp_min).norm();
-                } else if (scale > maxp){
-                    r_seg = (pw - endp_max).norm();
-                }
+            /// 计算几何残差
+            Eigen::Matrix3d Rw = q_w_curr.toRotationMatrix();
+            Eigen::Vector3d tw = t_w_curr;
+            Eigen::Vector3d pw = Rw * curr_point + tw;
+            Eigen::Vector3d nu = (pw - point_a).cross(pw - point_b);
+            Eigen::Vector3d de = point_b - point_a;
+            double r_line = nu.norm() / std::max(1e-9, de.norm());
+            double scale = (pw - center).dot(unit_direction);
+            r_seg = r_line;
+            if (scale < minp){
+                r_seg = (pw - endp_min).norm();
+            } else if (scale > maxp){
+                r_seg = (pw - endp_max).norm();
+            }
+
+            double lin_5 = (saes.eigenvalues()[2] - saes.eigenvalues()[1]) / std::max(1e-12 , (saes.eigenvalues()[2] + saes.eigenvalues()[1]));
+            double w_final = 1e-3; 
+
+            if(!use_multi_scale)
+            {
+                /// 计算跨度
                 double l1 = saes.eigenvalues()[0] ;
                 double l2 = saes.eigenvalues()[1] ;
                 double l3 = saes.eigenvalues()[2] ;
@@ -447,7 +434,7 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
                 // χ²(1) 置信门控（α≈0.997 → ≈3σ）
                 if (m > 3.0) 
                 {
-                    ROS_WARN("m is out of the range 3σ , m is %d" , m);
+                    ROS_WARN("m is out of the range 3sigma , m is %f" , m);
                 };
                 
                 double sigma_par = sqrt(std::max(1e-12, l3 / 4.0));
@@ -456,15 +443,61 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
                 // IRLS（Tukey）基于马氏距离 m（c=4.685）
                 double u = m / 4.685;
                 double w_irls = (u >= 1.0) ? 0.0 : std::pow(1.0 - u*u, 2);
-                double w_final = std::min(1.0, std::max(0.0, w_geom * w_irls));
-#pragma endregion 
-                ROS_INFO("corner residual is %f , line weight is %f",r_seg,w_final);
-                /// save residual corner 
-                cor_corrs_vec.push_back(Corner_Corr{curr_point,point_a,point_b,w_final});
-            }                           
+                w_final = std::min(1.0, std::max(0.0, w_geom * w_irls));
+
+            }else if(use_multi_scale)
+            {
+                /// 运用多尺度作为评估标准(直线尺度的一致性)
+                if(pointSearchInd.size() >= 10)
+                {
+                    std::vector<Eigen::Vector3d> nearCorners10;
+                    Eigen::Vector3d center10(0,0,0);
+                    for (int j = 0; j < 10; ++j){
+                        Eigen::Vector3d q(map_in->points[pointSearchInd[j]].x,
+                                        map_in->points[pointSearchInd[j]].y,
+                                        map_in->points[pointSearchInd[j]].z);
+                        center10 += q; nearCorners10.push_back(q);
+                    }
+                    center10 /= 10.0;
+                    Eigen::Matrix3d covMat10 = Eigen::Matrix3d::Zero();
+                    for (int j = 0; j < 10; ++j){
+                            Eigen::Vector3d dist = nearCorners10[j] - center10;
+                            covMat10 += dist * dist.transpose();
+                    }
+                    Eigen::SelfAdjointEigenSolver<Eigen::Matrix3d> saes10(covMat10);
+                    double l1 = saes10.eigenvalues()[0], l2 = saes10.eigenvalues()[1], l3 = saes10.eigenvalues()[2];
+                    if (l3 > 3.0 * l2){
+
+                        /// 计算10的最大投影
+                        for (int j = 0; j < 5; ++j){
+                            double proj = (nearCorners[j] - center).dot(unit_direction);
+                            if (proj > maxp) maxp = proj;
+                            if (proj < minp) minp = proj;
+                        }
+
+                        Eigen::Vector3d unit_direction10 = saes10.eigenvectors().col(2);
+                        double c = fabs(unit_direction.dot(unit_direction10));
+
+                        double lin_10 = (l3 - l2) / std::max(1e-12 , (l3 + l2));
+                        /// 修改center 以及 point_a point_b 适应大窗口的一致性
+                        point_a = center10 + maxp / 2.0 * unit_direction10 ;
+                        point_b = center10 + minp / 2.0 * unit_direction10 ;
+
+                        w_final = std::max(1e-3 , c * std::max(0.0 , lin_10));
+                    }else{
+                        /// 遇到线性表现不良好的地方  执行退化窗口出处理
+                        w_final = std::max(1e-3 , 0.5 * lin_5);
+                        // ROS_WARN("Line degeneracy scenario weight is line 5 :%f" , lin_5);
+                    }
+                }   
+            }
+            /// save residual corner 
+            // ROS_INFO("corner residual is %f , corner weight is :%f",r_seg ,w_final);
+            cor_corrs_vec.push_back(Corner_Corr{curr_point,point_a,point_b,w_final});
+            corner_num++;  
         }
     }
-    ROS_INFO("corner residual number is %d ",corner_num);
+    // ROS_INFO("corner residual number is %d ",corner_num);
     if(corner_num<20){
         printf("not enough correct points");
     }
@@ -626,11 +659,7 @@ void OdomEstimationClass::addPointsToMap(const pcl::PointCloud<pcl::PointXYZRGB>
     laserCloudSurfMap = rgbds(tmpSurf, 0.4*2 );
     laserCloudCornerMap = rgbds(tmpCorner, 0.4);
     extractstablepoint(laserCloudSurfMap, k_, theta, king);
-    extractstablepoint(laserCloudCornerMap, k_, theta, king);
-    // downSizeFilterSurf.setInputCloud(tmpSurf);
-    // downSizeFilterSurf.filter(*laserCloudSurfMap);
-    // downSizeFilterEdge.setInputCloud(tmpCorner);
-    // downSizeFilterEdge.filter(*laserCloudCornerMap);    
+    extractstablepoint(laserCloudCornerMap, k_, theta, king); 
     
     for(int i = 0;i < laserCloudSurfMap->points.size(); i++){
         if(laserCloudSurfMap->points[i].r > 250)
@@ -700,15 +729,15 @@ double OdomEstimationClass::RobustMADEstimation(const std::vector<double> res_ve
     return 1.4826 * mad;
 };
 
-std::vector<size_t> OdomEstimationClass::selectTopNCorner(size_t N, const std::vector<Corner_Corr> & res_cor)
+std::vector<size_t> OdomEstimationClass::selectTopNCorner(size_t N, const std::vector<Corner_Corr> & corner_corr_vec)
 {
-    std::vector<size_t> idx(res_cor.size());
+    std::vector<size_t> idx(corner_corr_vec.size());
     std::iota(idx.begin(), idx.end(), 0);
 
-    auto key = [&](size_t i){ return res_cor[i].wei_c; };
+    auto key = [&](size_t i){ return corner_corr_vec[i].wei_c; };
     if (idx.size() > N){
-        std::nth_element(idx.begin(), idx.begin()+N, idx.end(), [&](size_t a, size_t b){ return key(a) > key(b); });
-        // ROS_INFO("select top 2000 residual for factor graph optimization");
+        std::nth_element(idx.begin(), idx.begin()+N, idx.end(),
+         [&](size_t a, size_t b){ return key(a) > key(b); });
         idx.resize(N);
     }
     std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b){ return key(a) > key(b); });
@@ -725,7 +754,7 @@ std::vector<size_t> OdomEstimationClass::selectTopNSurf(size_t N, const std::vec
     if (idx.size() > N){
         std::nth_element(idx.begin(), idx.begin()+N, idx.end(), [
             &](size_t a, size_t b){ return key(a) > key(b); });
-        ROS_INFO("select top %d residual for factor graph optimization",N);
+        // ROS_INFO("select top %d residual for factor graph optimization",N);
         idx.resize(N);
     }
     /// from large to small 

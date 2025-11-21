@@ -5,8 +5,8 @@
 #include "lidarOptimization.h"
 
 // 参数：需要优化的点的坐标，直线上点a，直线上点b
-EdgeAnalyticCostFunction::EdgeAnalyticCostFunction(Eigen::Vector3d curr_point_, Eigen::Vector3d last_point_a_, Eigen::Vector3d last_point_b_,double weight_)
-        : curr_point(curr_point_), last_point_a(last_point_a_), last_point_b(last_point_b_),weight(weight_){
+EdgeAnalyticCostFunction::EdgeAnalyticCostFunction(Eigen::Vector3d curr_point_, Eigen::Vector3d last_point_a_, Eigen::Vector3d last_point_b_)
+        : curr_point(curr_point_), last_point_a(last_point_a_), last_point_b(last_point_b_){
 
 }
 
@@ -24,7 +24,7 @@ bool EdgeAnalyticCostFunction::Evaluate(double const *const *parameters, double 
     // 使用公式residuals[0]=|(lp-a)x(lp-b)|/|a-b|（lp-a和lp-b两个向量构成的平行四边形面积/平行四边形对角边==点lp到a-b的距离）
     Eigen::Vector3d nu = (point_w - last_point_a).cross(point_w - last_point_b);
     Eigen::Vector3d de = last_point_b - last_point_a;
-    residuals[0] = weight * nu.norm()/de.norm();
+    residuals[0] =  nu.norm()/de.norm();
     /*
     d(R)/d(rx) = 
     {
@@ -71,13 +71,13 @@ bool EdgeAnalyticCostFunction::Evaluate(double const *const *parameters, double 
         Eigen::Map<Eigen::Matrix<double, 1, 3, Eigen::RowMajor> > dL_dt(jacobians[0]+3);
 
         Eigen::RowVector3d nT = (nu.cross(de) / nu.norm() / de.norm()).transpose();
-        dL_dt = weight * nT;
+        dL_dt =  nT;
         // dL_dt[0] = nu.dot(Eigen::Vector3d::UnitX().cross(de)) / nu.norm();
         // dL_dt[1] = nu.dot(Eigen::Vector3d::UnitY().cross(de)) / nu.norm();
         // dL_dt[2] = nu.dot(Eigen::Vector3d::UnitZ().cross(de)) / nu.norm();
-        dL_dr[0] = weight * dL_dt.dot(dRp_drx);
-        dL_dr[1] = weight * dL_dt.dot(dRp_dry);
-        dL_dr[2] = weight * dL_dt.dot(dRp_drz);
+        dL_dr[0] =  dL_dt.dot(dRp_drx);
+        dL_dr[1] =  dL_dt.dot(dRp_dry);
+        dL_dr[2] = dL_dt.dot(dRp_drz);
         
         // dL_dt[2] = 0.0;
         // dL_dr[0] = 0.0;

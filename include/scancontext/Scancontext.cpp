@@ -23,7 +23,7 @@ float deg2rad(float degrees)
 float xy2theta( const float & _x, const float & _y )
 {
     if ( (_x >= 0) & (_y >= 0)) 
-        return (180/M_PI) * atan(_y / _x);
+        return (180/M_PI) * atan(_y / _x); //deg
 
     if ( (_x < 0) & (_y >= 0)) 
         return 180 - ( (180/M_PI) * atan(_y / (-_x)) );
@@ -35,7 +35,10 @@ float xy2theta( const float & _x, const float & _y )
         return 360 - ( (180/M_PI) * atan((-_y) / _x) );
 } // xy2theta
 
-
+/// @brief  矩阵执行列向平移
+/// @param _mat 
+/// @param _num_shift 
+/// @return 
 MatrixXd circshift( MatrixXd &_mat, int _num_shift )
 {
     // shift columns to right direction 
@@ -78,14 +81,14 @@ double SCManager::distDirectSC ( MatrixXd &_sc1, MatrixXd &_sc2 )
         if( (col_sc1.norm() == 0) | (col_sc2.norm() == 0) )
             continue; // don't count this sector pair. 
 
-        double sector_similarity = col_sc1.dot(col_sc2) / (col_sc1.norm() * col_sc2.norm());
+        double sector_similarity = col_sc1.dot(col_sc2) / (col_sc1.norm() * col_sc2.norm());  //余弦相似性
 
         sum_sector_similarity = sum_sector_similarity + sector_similarity;
         num_eff_cols = num_eff_cols + 1;
     }
     
     double sc_sim = sum_sector_similarity / num_eff_cols;
-    return 1.0 - sc_sim;
+    return 1.0 - sc_sim; // 反映相似度距离差异
 
 } // distDirectSC
 
@@ -98,12 +101,12 @@ int SCManager::fastAlignUsingVkey( MatrixXd & _vkey1, MatrixXd & _vkey2)
     {
         MatrixXd vkey2_shifted = circshift(_vkey2, shift_idx);
 
-        MatrixXd vkey_diff = _vkey1 - vkey2_shifted;
+        MatrixXd vkey_diff = _vkey1 - vkey2_shifted;  /// 两个描述子矩阵之间的差异计算norm
 
         double cur_diff_norm = vkey_diff.norm();
         if( cur_diff_norm < min_veky_diff_norm )
         {
-            argmin_vkey_shift = shift_idx;
+            argmin_vkey_shift = shift_idx;  // 旋转idx
             min_veky_diff_norm = cur_diff_norm;
         }
     }
@@ -116,8 +119,8 @@ int SCManager::fastAlignUsingVkey( MatrixXd & _vkey1, MatrixXd & _vkey2)
 std::pair<double, int> SCManager::distanceBtnScanContext( MatrixXd &_sc1, MatrixXd &_sc2 )
 {
     // 1. fast align using variant key (not in original IROS18)
-    MatrixXd vkey_sc1 = makeSectorkeyFromScancontext( _sc1 );
-    MatrixXd vkey_sc2 = makeSectorkeyFromScancontext( _sc2 );
+    MatrixXd vkey_sc1 = makeSectorkeyFromScancontext( _sc1 ); // row 1 column 0
+    MatrixXd vkey_sc2 = makeSectorkeyFromScancontext( _sc2 );/// 同一航向角检索到特征的均值
     int argmin_vkey_shift = fastAlignUsingVkey( vkey_sc1, vkey_sc2 );
 
     const int SEARCH_RADIUS = round( 0.5 * SEARCH_RATIO * _sc1.cols() ); // a half of search range 
@@ -130,6 +133,8 @@ std::pair<double, int> SCManager::distanceBtnScanContext( MatrixXd &_sc1, Matrix
     std::sort(shift_idx_search_space.begin(), shift_idx_search_space.end());
 
     // 2. fast columnwise diff 
+
+    /// 这是表示在第二个sc 的邻近帧在作出更加精确的搜索么？
     int argmin_shift = 0;
     double min_sc_dist = 10000000;
     for ( int num_shift: shift_idx_search_space )
@@ -204,7 +209,7 @@ MatrixXd SCManager::makeRingkeyFromScancontext( Eigen::MatrixXd &_desc )
     for ( int row_idx = 0; row_idx < _desc.rows(); row_idx++ )
     {
         Eigen::MatrixXd curr_row = _desc.row(row_idx);
-        invariant_key(row_idx, 0) = curr_row.mean();
+        invariant_key(row_idx, 0) = curr_row.mean();  /// 将每一行的特征取平均值
     }
 
     return invariant_key;
@@ -249,8 +254,8 @@ void SCManager::saveScancontextAndKeys( Eigen::MatrixXd _scd )
 void SCManager::makeAndSaveScancontextAndKeys( pcl::PointCloud<SCPointType> & _scan_down )
 {
     Eigen::MatrixXd sc = makeScancontext(_scan_down); // v1 
-    Eigen::MatrixXd ringkey = makeRingkeyFromScancontext( sc );
-    Eigen::MatrixXd sectorkey = makeSectorkeyFromScancontext( sc );
+    Eigen::MatrixXd ringkey = makeRingkeyFromScancontext( sc ); //row
+    Eigen::MatrixXd sectorkey = makeSectorkeyFromScancontext( sc ); //col
     std::vector<float> polarcontext_invkey_vec = eig2stdvec( ringkey );
 
     polarcontexts_.push_back( sc ); 
@@ -305,7 +310,7 @@ std::pair<int, float> SCManager::detectLoopClosureIDBetweenSession (std::vector<
     for ( int candidate_iter_idx = 0; candidate_iter_idx < NUM_CANDIDATES_FROM_TREE; candidate_iter_idx++ )
     {
         MatrixXd polarcontext_candidate = polarcontexts_[ candidate_indexes[candidate_iter_idx] ];
-        std::pair<double, int> sc_dist_result = distanceBtnScanContext( curr_desc, polarcontext_candidate ); 
+        std::pair<double, int> sc_dist_result = distanceBtnScanContext( curr_desc, polarcontext_candidate );  /// 两阶段描述子匹配
         
         double candidate_dist = sc_dist_result.first;
         int candidate_align = sc_dist_result.second;
@@ -362,11 +367,11 @@ std::pair<int, float> SCManager::detectLoopClosureID ( void )
         TicTocV2 t_tree_construction;
 
         polarcontext_invkeys_to_search_.clear();
-        polarcontext_invkeys_to_search_.assign( polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() - NUM_EXCLUDE_RECENT ) ;
+        polarcontext_invkeys_to_search_.assign( polarcontext_invkeys_mat_.begin(), polarcontext_invkeys_mat_.end() - NUM_EXCLUDE_RECENT ) ; /// 在历史帧中搜索
 
         polarcontext_tree_.reset(); 
         polarcontext_tree_ = std::make_unique<InvKeyTree>(PC_NUM_RING /* dim */, polarcontext_invkeys_to_search_, 10 /* max leaf */ );
-        // tree_ptr_->index->buildIndex(); // inernally called in the constructor of InvKeyTree (for detail, refer the nanoflann and KDtreeVectorOfVectorsAdaptor)
+       
         t_tree_construction.toc("Tree construction");
     }
     tree_making_period_conter = tree_making_period_conter + 1;
@@ -375,7 +380,7 @@ std::pair<int, float> SCManager::detectLoopClosureID ( void )
     int nn_align = 0;
     int nn_idx = 0;
 
-    // knn search
+    // knn search (寻找候选的描述子)
     std::vector<size_t> candidate_indexes( NUM_CANDIDATES_FROM_TREE ); 
     std::vector<float> out_dists_sqr( NUM_CANDIDATES_FROM_TREE );
 
@@ -391,18 +396,18 @@ std::pair<int, float> SCManager::detectLoopClosureID ( void )
     TicTocV2 t_calc_dist;   
     for ( int candidate_iter_idx = 0; candidate_iter_idx < NUM_CANDIDATES_FROM_TREE; candidate_iter_idx++ )
     {
-        MatrixXd polarcontext_candidate = polarcontexts_[ candidate_indexes[candidate_iter_idx] ];
+        MatrixXd polarcontext_candidate = polarcontexts_[ candidate_indexes[candidate_iter_idx] ]; /// 候选描述子与当前描述子的匹配关系
         std::pair<double, int> sc_dist_result = distanceBtnScanContext( curr_desc, polarcontext_candidate ); 
         
-        double candidate_dist = sc_dist_result.first;
-        int candidate_align = sc_dist_result.second;
+        double candidate_dist = sc_dist_result.first; // 相似性距离
+        int candidate_align = sc_dist_result.second; // 候选帧idx
 
         if( candidate_dist < min_dist )
         {
             min_dist = candidate_dist;
             nn_align = candidate_align;
 
-            nn_idx = candidate_indexes[candidate_iter_idx];
+            nn_idx = candidate_indexes[candidate_iter_idx]; // 返回是粗匹配的tree 上的节点 在经过nn_align偏移后最终实现最佳匹配
         }
     }
     t_calc_dist.toc("Distance calc");

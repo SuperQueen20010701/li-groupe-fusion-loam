@@ -34,7 +34,8 @@ std::queue<sensor_msgs::PointCloud2ConstPtr> pointCloudSurfBuf;
 lidar::Lidar lidar_param;
 
 ros::Publisher pubLaserOdometry;
-
+int flush_interval = 100;
+int flush_count = 0;
 // dt文件
 // std::ofstream dt_file_kitti;
 FILE *dt_file_kitti;
@@ -159,6 +160,16 @@ void odom_estimation(){
                 pointcloud_time.toSec(),
                 t_current.x(), t_current.y(), t_current.z(), 
                 q_current.x(), q_current.y(), q_current.z(), q_current.w());
+        }
+        flush_count ++ ;
+        if((flush_count+1) % flush_interval == 0 )
+        {
+            if(fflush(dt_file_kitti) == EOF || fflush(dt_file_tum) == EOF)
+            {
+                ROS_WARN("WARN !! failed to fllush the io file");
+                fclose(dt_file_kitti);
+                fclose(dt_file_tum);
+            }
         }
         //sleep 2 ms every time
         std::chrono::milliseconds dura(2);

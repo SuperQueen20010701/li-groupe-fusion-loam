@@ -939,31 +939,31 @@ int main(int argc, char **argv)
     // system params 
 	nh.param<double>("keyframe_meter_gap", keyframeMeterGap, 2.0); // pose assignment every k m move 
 	nh.param<double>("keyframe_deg_gap", keyframeDegGap, 10.0); // pose assignment every k deg rot 
-    keyframeRadGap = deg2rad(keyframeDegGap);
+    keyframeRadGap = deg2rad(keyframeDegGap);  // deg to rad 
 
-	nh.param<double>("sc_dist_thres", scDistThres, 0.2);  
+	nh.param<double>("sc_dist_thres", scDistThres, 0.2);
 	nh.param<double>("sc_max_radius", scMaximumRadius, 80.0); // 80 is recommended for outdoor, and lower (ex, 20, 40) values are recommended for indoor 
 
     ISAM2Params parameters;
     parameters.relinearizeThreshold = 0.01;
     parameters.relinearizeSkip = 1;
     isam = new ISAM2(parameters);
-    initNoises();
+    initNoises();  // 初始化噪声
 
     scManager.setSCdistThres(scDistThres);
     scManager.setMaximumRadius(scMaximumRadius);
 
     float filter_size = 0.4; 
-    downSizeFilterScancontext.setLeafSize(filter_size, filter_size, filter_size);
-    downSizeFilterICP.setLeafSize(filter_size, filter_size, filter_size);
+    downSizeFilterScancontext.setLeafSize(filter_size, filter_size, filter_size); // 描述子
+    downSizeFilterICP.setLeafSize(filter_size, filter_size, filter_size); // icp配准
 
     double map_resolution = 0.4;
     nh.getParam("/map_resolution", map_resolution);
-    downSizeFilterMapPGO.setLeafSize(map_resolution, map_resolution, map_resolution);
+    downSizeFilterMapPGO.setLeafSize(map_resolution, map_resolution, map_resolution); //map地图
 
 	ros::Subscriber subLaserCloudFullRes = nh.subscribe<sensor_msgs::PointCloud2>("/velodyne_points_filtered", 500, laserCloudFullResHandler);
 	ros::Subscriber subLaserOdometry = nh.subscribe<nav_msgs::Odometry>("/odom", 500, laserOdometryHandler);
-	ros::Subscriber subGPS = nh.subscribe<sensor_msgs::NavSatFix>("/gps/fix", 100, gpsHandler);
+	ros::Subscriber subGPS = nh.subscribe<sensor_msgs::NavSatFix>("/kitti/oxts/gps/fix", 100, gpsHandler);
 
 	pubOdomAftPGO = nh.advertise<nav_msgs::Odometry>("/aft_pgo_odom", 100);
 	pubPathAftPGO = nh.advertise<nav_msgs::Path>("/aft_pgo_path", 100);
