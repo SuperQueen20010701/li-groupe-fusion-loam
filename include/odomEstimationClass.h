@@ -36,8 +36,10 @@
 
 #include <algorithm>
 #include <numeric>
+#include "tic_toc.h"
 #ifdef NANOFLANN
 #include <scancontext/nanoflann.hpp>
+
 
 template <typename Derived>
 struct PointCloudAdaptor
@@ -124,15 +126,15 @@ struct Corner_Corr{
 	Eigen::Vector3d pc_;
 	Eigen::Vector3d pa_;
 	Eigen::Vector3d pb_;
-	double res;
+
 	double wei_c;
 };
 
 struct Surf_Corr{
-	Eigen::Vector3d P_C;
+	Eigen::Vector3d pc_;
 	Eigen::Vector3d norm ;
 	double neg ;
-	double res;
+	int rgb_;
 	double wei_s ;
 };
 
@@ -207,14 +209,15 @@ class OdomEstimationClass
 		std::vector<size_t> surf_sel ,corner_sel;
 		const size_t max_select = 2000;
 
-		double sigma_surf = 0.0 ;
-		double sigma_corner =0.0;
-
 		double RobustMADEstimation(const std::vector<double> res_vec_in);
 
-		std::vector<size_t> selectTopN(size_t N, const std::vector<double>& r_abs, double sigma);
+		std::vector<size_t> selectTopNCorner(size_t N, const std::vector<Corner_Corr> & res_cor);
+
+		std::vector<size_t> selectTopNSurf(size_t N, const std::vector<Surf_Corr> & res_surf);
 
 		Eigen::Isometry3d ParamToIso(const double p[6]);
+
+		double median(std::vector<double>& v);
 };
 
 #endif // _ODOM_ESTIMATION_CLASS_H_

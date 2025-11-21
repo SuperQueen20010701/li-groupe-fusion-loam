@@ -128,10 +128,12 @@ bool SurfNormAnalyticCostFunction::Evaluate(double const *const *parameters, dou
         dRp_drz = dR_drz * curr_point;
         Eigen::Map<Eigen::Matrix<double, 1, 3, Eigen::RowMajor> > dL_dr(jacobians[0]);
         Eigen::Map<Eigen::Matrix<double, 1, 3, Eigen::RowMajor> > dL_dt(jacobians[0]+3);
-        dL_dt = plane_unit_norm.transpose();
-        dL_dr[0] = dL_dt.dot(dRp_drx);
-        dL_dr[1] = dL_dt.dot(dRp_dry);
-        dL_dr[2] = dL_dt.dot(dRp_drz);
+        
+        Eigen::RowVector3d nT = plane_unit_norm.transpose();
+        dL_dt = nT;
+        dL_dr[0] =  dL_dt.dot(dRp_drx);
+        dL_dr[1] =  dL_dt.dot(dRp_dry);
+        dL_dr[2] =  dL_dt.dot(dRp_drz);
 
         // dL_dr[2] = 0.0;
         // dL_dt[0] = 0.0;
