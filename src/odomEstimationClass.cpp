@@ -203,7 +203,7 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
                     surf_pbm.AddParameterBlock(paramEuler, 6);
                     
                     // 添加面特征项
-                    addSurfCostFactor(downsampledSurfCloud,laserCloudSurfMap,surf_pbm,loss_function_s);
+                    addSurfCostFactor(downsampledSurfCloud,laserCloudSurfMap);
 
                     /// 筛选最优top K
                     std::vector<size_t> surf_idx = selectTopNSurf(2000,surf_corrs_vec);
@@ -228,10 +228,10 @@ void OdomEstimationClass::updatePointsToMap(const pcl::PointCloud<pcl::PointXYZR
                     ceres::Solve(options_s, &surf_pbm, &summary_s);
                     updatePose();
                 }
-                /// corner optimization 
-                // {
-                //     addEdgeCostFactor(downsampledEdgeCloud,laserCloudCornerMap,problem_joint,loss_function);
-                // }
+                // corner optimization 
+                {
+                    addEdgeCostFactor(downsampledEdgeCloud,laserCloudCornerMap);
+                }
                 
                 // 
 
@@ -322,7 +322,7 @@ void OdomEstimationClass::downSamplingToMap(const pcl::PointCloud<pcl::PointXYZR
 }
 
 // 输入：特征点点云，特征点点云地图，优化问题，loss函数
-void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& map_in, ceres::Problem& problem, ceres::LossFunction *loss_function){
+void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& map_in){
     int corner_num=0;
 
     cor_corrs_vec.clear();
@@ -411,46 +411,56 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
                 // problem.AddResidualBlock(cost_function, loss_function, paramEuler);
                 corner_num++;   
                 
-                /// calculate the edge residual weight 
-                {
-
-                }
-                Eigen::Vector3d p_c(pc_in->points[i].x , pc_in->points[i].y ,pc_in->points[i].z);
-                Eigen::Vector3d p_w = R_init * p_c + t_init;
-                Eigen::Vector3d n_u= (p_w - point_a).cross(p_w - point_b);
-                Eigen::Vector3d d_e = point_a - point_b ;
-
-                /// calculate the line weight 
-                double l1 = saes.eigenvalues()[0] ;
-                double l2 = saes.eigenvalues()[1] ;
-                double l3 = saes.eigenvalues()[2];
-
-                /// 沿线跨度
+#pragma region 计算权重
+                ///计算邻域跨度
                 double maxp = -1e9, minp = 1e9;
-                double max_c = -1e9 , min_c = 1e9;
                 for (int j = 0; j < 5; ++j){
                     double proj = (nearCorners[j] - center).dot(unit_direction);
-                    if (proj > maxp) 
-                    {
-                        maxp = proj;
-                        max_c = (nearCorners[j] - center).norm();
-                    }
-                    
-                    if (proj < minp)
-                    {
-                        minp = proj;
-                        min_c = (nearCorners[j] - center).norm();
-                    }
+                    if (proj > maxp) maxp = proj;
+                    if (proj < minp) minp = proj;
                 }
-                double span = std::max(0.0,maxp - minp);
-                double max_c_min = max_c + min_c;
 
-                double w_geom_edge = std::min(1.0, span / max_c_min);
+                Eigen::Vector3d endp_min = center + minp * unit_direction;
+                Eigen::Vector3d endp_max = center + maxp * unit_direction;
 
-                double res = n_u.norm() / std::max(1e-9,d_e.norm());
-                ROS_INFO("corner residual is %f , line weight is %f",res,w_geom_edge);
+                /// 计算几何残差
+                Eigen::Matrix3d Rw = q_w_curr.toRotationMatrix();
+                Eigen::Vector3d tw = t_w_curr;
+                Eigen::Vector3d pw = Rw * curr_point + tw;
+                Eigen::Vector3d nu = (pw - point_a).cross(pw - point_b);
+                Eigen::Vector3d de = point_b - point_a;
+                double r_line = nu.norm() / std::max(1e-9, de.norm());
+                double scale = (pw - center).dot(unit_direction);
+                double r_seg = r_line;
+                if (scale < minp){
+                    r_seg = (pw - endp_min).norm();
+                } else if (scale > maxp){
+                    r_seg = (pw - endp_max).norm();
+                }
+                double l1 = saes.eigenvalues()[0] ;
+                double l2 = saes.eigenvalues()[1] ;
+                double l3 = saes.eigenvalues()[2] ;
+                
+                // 几何权重（无经验）：w_perp = σ∥/(σ∥+σ⊥)
+                double sigma_perp = sqrt(std::max(1e-12, (l1 + l2) / 4.0));
+                double m = r_seg / std::max(1e-9, sigma_perp);
+                // χ²(1) 置信门控（α≈0.997 → ≈3σ）
+                if (m > 3.0) 
+                {
+                    ROS_WARN("m is out of the range 3σ , m is %d" , m);
+                };
+                
+                double sigma_par = sqrt(std::max(1e-12, l3 / 4.0));
+                double w_geom = sigma_par / std::max(1e-12, (sigma_par + sigma_perp));
+
+                // IRLS（Tukey）基于马氏距离 m（c=4.685）
+                double u = m / 4.685;
+                double w_irls = (u >= 1.0) ? 0.0 : std::pow(1.0 - u*u, 2);
+                double w_final = std::min(1.0, std::max(0.0, w_geom * w_irls));
+#pragma endregion 
+                ROS_INFO("corner residual is %f , line weight is %f",r_seg,w_final);
                 /// save residual corner 
-                cor_corrs_vec.push_back(Corner_Corr{p_c,point_a,point_b,w_geom_edge});
+                cor_corrs_vec.push_back(Corner_Corr{curr_point,point_a,point_b,w_final});
             }                           
         }
     }
@@ -460,7 +470,7 @@ void OdomEstimationClass::addEdgeCostFactor(const pcl::PointCloud<pcl::PointXYZR
     }
 }
 
-void OdomEstimationClass::addSurfCostFactor(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& map_in, ceres::Problem& problem, ceres::LossFunction *loss_function){
+void OdomEstimationClass::addSurfCostFactor(const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pc_in, const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& map_in){
     int surf_num=0;
     surf_corrs_vec.clear();
     for (int i = 0; i < (int)pc_in->points.size(); i++)
@@ -541,9 +551,7 @@ void OdomEstimationClass::addSurfCostFactor(const pcl::PointCloud<pcl::PointXYZR
                     assert(0);
                     continue;
                 }
-                // 添加误差项
-                // ceres::CostFunction *cost_function = new SurfNormAnalyticCostFunction(curr_point, norm, negative_OA_dot_norm, pc_in->points[i].b);    
-                // problem.AddResidualBlock(cost_function, loss_function, paramEuler);
+
                 // surf corr
                 {
                     std::sort(res_vec.begin(),res_vec.end());

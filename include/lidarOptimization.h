@@ -14,13 +14,14 @@ void getPose(double const * const *paramEuler, Eigen::Quaterniond& q, Eigen::Vec
 class EdgeAnalyticCostFunction : public ceres::SizedCostFunction<1, 6> {
 	public:
 
-		EdgeAnalyticCostFunction(Eigen::Vector3d curr_point_, Eigen::Vector3d last_point_a_, Eigen::Vector3d last_point_b_);
+		EdgeAnalyticCostFunction(Eigen::Vector3d curr_point_, Eigen::Vector3d last_point_a_, Eigen::Vector3d last_point_b_,double weight_);
 		virtual ~EdgeAnalyticCostFunction() {}
 		virtual bool Evaluate(double const *const *parameters, double *residuals, double **jacobians) const;
 
 		Eigen::Vector3d curr_point;
 		Eigen::Vector3d last_point_a;
 		Eigen::Vector3d last_point_b;
+		double weight;
 };
 
 class SurfNormAnalyticCostFunction : public ceres::SizedCostFunction<1, 6> {
